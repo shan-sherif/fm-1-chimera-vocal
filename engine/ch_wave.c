@@ -1,0 +1,520 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
+ * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ *
+ * The FM-1's tract: a Kelly-Lochbaum waveguide driven by CHIMERA's anatomy, glottis and noise sources; see
+ * ch_wave.h. The glottis's flow, the noise law and the output stage are CHIMERA's (crates/chimera/src/airway/
+ * network.rs, sources/glottis.rs, voice/human_voice.rs), as in ch_voice.c.
+ *
+ * The waves are pressures. At a junction between sections of areas A1 and A2, with k = (A1 - A2) / (A1 + A2), the
+ * waves arriving from either side (in1 travelling right, in2 left) leave as in1 + d (right) and in2 + d (left),
+ * d = k (in1 - in2). Where the nose joins, the junction's pressure is 2 (A1 in1 + A2 in2 + A3 in3) / (A1 + A2 + A3)
+ * and each wave leaves as that pressure less the one arriving from its side (the two-port case is the same). A
+ * section's volume flow is (p+ - p-) A / (rho c). Each sample reads one wave buffer and writes the other. */
+#define CH_RAM   /* the audio rate in RAM on the FM-1 (ch_common.h CH_HOT) */
+#include "ch_wave.h"
+#include "ch_common.h"
+#ifdef CH_WAVE_DEBUG
+#include <stdio.h>
+#endif
+
+static ch_real nose_area(ch_real u, ch_real k)   /* HumanAirway's nasal profile, u along it 0..1 */
+{
+    ch_real a = u < R(0.18) ? R(2.6) : u < R(0.75) ? R(2.0) - R(0.6) * (u - R(0.18)) : u < R(0.9) ? R(1.4) : R(1.0);
+    return a * k * k;
+}
+
+CH_INLINE ch_real refl(ch_real a1, ch_real a2)
+{
+    ch_real s = a1 + a2;
+    return s > R(1e-9) ? (a1 - a2) / s : 0;
+}
+
+void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real tract_len)
+{
+    const ch_real dx = C_SOUND / fs, nose_len = R(11.4) * k;
+    int i;
+    w->fs = fs;
+    w->rho_c = RHO * C_SOUND;
+    w->closed_area = R(2e-4);
+    w->ctrl_every = ctrl_every;
+    w->dx = dx;
+    w->var_len = 0;
+    w->n = (int)js_round_c(tract_len / dx);
+    w->n = w->n < 8 ? 8 : w->n > CH_WMAX ? CH_WMAX : w->n;
+    w->nn = (int)js_round_c(nose_len / dx);
+    w->nn = w->nn < 4 ? 4 : w->nn > CH_WNMAX ? CH_WNMAX : w->nn;
+    w->jv = w->n / 2;
+    w->p = 0;
+    for (i = 0; i < CH_WMAX; i++) {
+        ch_wsec_t *s = &w->sec[i];
+        s->R[0] = s->R[1] = s->L[0] = s->L[1] = s->k = s->dk = s->darea = 0;
+        s->area = R(1.0) * k * k;
+    }
+    w->w1 = w->w2 = R(1.0);
+    w->w3 = w->dw1 = w->dw2 = w->dw3 = 0;
+    for (i = 0; i < CH_WNMAX; i++) {
+        ch_wnsec_t *s = &w->nsec[i];
+        s->R[0] = s->R[1] = s->L[0] = s->L[1] = s->k = 0;
+        s->area = i == 0 ? 0 : nose_area(((ch_real)i + R(0.5)) / (ch_real)w->nn, k);
+    }
+    for (i = 1; i < w->nn; i++)
+        w->nsec[i].k = refl(w->nsec[i - 1].area, w->nsec[i].area);
+    /* the losses and the ends: tuned against CHIMERA's renders (lab/port/replay --wave) */
+    w->fade = R(0.995);
+    w->fade_n = R(0.99);
+    w->r_lip = R(-0.85);
+    w->r_nose = R(-0.85);
+    w->r_glottis = R(0.75);
+    w->rad_load = 1;
+    w->noise_gain = R(0.4);                 /* CHIMERA's sources through the waveguide's flows: tuned on its renders */
+    w->n_jet = 0;
+    w->len_changed = 0;
+    for (i = 0; i < 8; i++)
+        w->jet_u[i] = 0;
+    w->walls = 1;
+    w->wall_s = w->wall_v = w->wall_y = w->wall_u = 0;
+    for (i = 0; i < 2; i++) {
+        w->rb0[i] = R(-1.0);
+        w->rb1[i] = w->ra1[i] = w->r_in[i] = w->r_out[i] = 0;
+    }
+    glottis_init(&w->glottis, fs);
+    w->port_len = R(0.3) * k;          /* HumanAirway's glottis_port: PortSpec::new(0, 0.3k).kinetic(0.37, 1).slit(1.4k) */
+    w->port_slit = R(1.4) * k;
+    w->port_kin = R(0.37);
+    w->port_kex = R(1.0);
+    w->u_g = w->l_prev = w->mom = w->p_supra = w->a_g = 0;
+    w->p_lung = w->p_lung_now = w->p_lung_step = 0;
+    w->n_noise = 0;
+    w->rng = 12345;
+    w->rad_prev = 0;
+    /* HumanVoice's output: smaller bodies radiate more high-frequency energy at their higher f0 */
+    w->output_gain = R(1.33) * R(5.5e-7) * (k >= R(1.0) ? R(1.0) : k <= R(0.9) ? R(0.55) : R(0.55) + R(0.45) * (k - R(0.9)) / R(0.1));
+    w->dc_x = w->dc_y = w->lim_env = 0;
+    w->dc_coef = EXP((R(-2.0) * CH_PI * R(25.0)) / fs);
+    w->lim_hold = 0;
+    w->lim_hold_n = (int32_t)js_round_c(R(0.025) * fs);
+    w->lim_release = EXP(R(-1.0) / (R(0.2) * fs));
+}
+
+/* the radiation load's reflection at an open end of area a: CHIMERA's parallel R-L (Lr = 8 rho / (3 pi sqrt(pi a)),
+ * Rr = 128 rho c / (9 pi^2 a)) against the section's rho c / a, through the bilinear transform. -1 at DC (the end is
+ * an open short), rising toward (Rr - Zc) / (Rr + Zc) at high frequencies */
+CH_HOT static void rad_coefs(ch_wave_t *w, int e, ch_real a)
+{
+    ch_real lr, rr, zc, kk = R(2.0) * w->fs, d0;
+    a = mx(a, R(1e-4));
+    lr = (R(8.0) * RHO) / (R(3.0) * CH_PI * SQRT(CH_PI * a));
+    rr = (R(128.0) * RHO * C_SOUND) / (R(9.0) * CH_PI * CH_PI * a);
+    zc = w->rho_c / a;
+    d0 = kk * lr * (rr + zc) + zc * rr;
+    w->rb0[e] = (kk * lr * (rr - zc) - zc * rr) / d0;
+    w->rb1[e] = -(kk * lr * (rr - zc) + zc * rr) / d0;
+    w->ra1[e] = (zc * rr - kk * lr * (rr + zc)) / d0;
+}
+
+/* the area a section at s (cm from the glottis) gets from the anatomy's two tubes: closed where their minimum is */
+CH_HOT static ch_real tube_area(const ch_shape_t *t, ch_real s, ch_real closed)
+{
+    ch_real a, m;
+    if (s < t->ph_len) {
+        int i = (int)(s / (t->ph_len / (ch_real)t->n_ph));
+        i = i < 0 ? 0 : i > t->n_ph - 1 ? t->n_ph - 1 : i;
+        a = t->ph_areas[i];
+        m = t->ph_min[i];
+    } else {
+        int i = (int)((s - t->ph_len) / (t->or_len / (ch_real)t->n_or));
+        i = i < 0 ? 0 : i > t->n_or - 1 ? t->n_or - 1 : i;
+        a = t->or_areas[i];
+        m = t->or_min[i];
+    }
+    return m < closed || a < closed ? 0 : a;
+}
+
+CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch_glottis_params_t *g, ch_real p_lung)
+{
+    const ch_real inv1 = R(1.0) / (ch_real)w->ctrl_every;
+    ch_real inv, len, target[CH_WMAX], a1, a2, a3, sum, per;
+    int i, m;
+    /* the lungs' pressure, ramped over the step; the glottis's parameters */
+    w->p_lung = p_lung;
+    if (w->p_lung == 0)
+        tiny(&w->p_lung_now);
+    w->p_lung_step = (w->p_lung - w->p_lung_now) * inv1;
+    w->glottis.p = *g;
+    glottis_flush_tiny(&w->glottis);
+    tiny(&w->dc_x);
+    tiny(&w->dc_y);
+    tiny(&w->lim_env);
+    if (!t)
+        return;                                 /* no new shape: the tract glides on */
+    inv = inv1 / (ch_real)(steps < 1 ? 1 : steps);
+    len = t->ph_len + t->or_len;
+    /* the tract's length: as many sections as fit (the lips move a section at a time; a new section starts as the
+     * lips' was, an old one's waves go) */
+    if (w->var_len) {
+        int nl = (int)js_round_c(len / w->dx);
+        nl = nl < 8 ? 8 : nl > CH_WMAX ? CH_WMAX : nl;
+        for (i = w->n; i < nl; i++) {
+            w->sec[i] = w->sec[w->n - 1];
+            w->sec[i].dk = w->sec[i].darea = 0;
+        }
+        if (nl != w->n)
+            w->len_changed = 1;
+        w->n = nl;
+    }
+    per = len / (ch_real)w->n;
+    /* the tract's sections from the anatomy, spread over its current length; their reflections, ramped */
+    for (i = 0; i < w->n; i++) {
+        target[i] = tube_area(t, ((ch_real)i + R(0.5)) * per, w->closed_area);
+        w->sec[i].darea = (target[i] - w->sec[i].area) * inv;
+    }
+    /* the sections shut now or by the end of the step */
+    w->n_shut = 0;
+    for (i = 0; i < w->n; i++)
+        if (w->sec[i].area < w->closed_area || target[i] < w->closed_area)
+            w->shut[w->n_shut++] = (int16_t)i;
+    /* every junction restarts from its sections' areas now (a junction that was the nose's, or had a stale value,
+     * would otherwise jump: a one-sample spike) and ramps to the target's */
+    w->sec[0].dk = 0;
+    for (m = 1; m < w->n; m++) {
+        w->sec[m].k = refl(w->sec[m - 1].area, w->sec[m].area);
+        w->sec[m].dk = (refl(target[m - 1], target[m]) - w->sec[m].k) * inv;
+    }
+    /* the nose: where it joins, the port's area as its first section */
+    m = (int)js_round_c(t->ph_len / per);
+    w->jv = m < 1 ? 1 : m > w->n - 1 ? w->n - 1 : m;
+    /* (its weights likewise restart from the areas now, at its junction) */
+    a1 = w->sec[w->jv - 1].area;
+    a2 = w->sec[w->jv].area;
+    a3 = w->nsec[0].area;
+    sum = a1 + a2 + a3;
+    if (sum > R(1e-9)) {
+        w->w1 = R(2.0) * a1 / sum;
+        w->w2 = R(2.0) * a2 / sum;
+        w->w3 = R(2.0) * a3 / sum;
+    }
+    a1 = target[w->jv - 1];
+    a2 = target[w->jv];
+    a3 = mx(0, t->velum_port_area);
+    sum = a1 + a2 + a3;
+    if (sum > R(1e-9)) {
+        w->dw1 = (R(2.0) * a1 / sum - w->w1) * inv;
+        w->dw2 = (R(2.0) * a2 / sum - w->w2) * inv;
+        w->dw3 = (R(2.0) * a3 / sum - w->w3) * inv;
+    } else {
+        w->dw1 = w->dw2 = w->dw3 = 0;
+    }
+    w->nsec[0].area = a3;
+    w->nsec[1].k = refl(w->nsec[0].area, w->nsec[1].area);
+    rad_coefs(w, 0, target[w->n - 1]);
+    rad_coefs(w, 1, w->nsec[w->nn - 1].area);
+    /* the jets: CHIMERA's kinetic coefficients (the expansion leaving the narrower side, a tenth of it entering) at
+     * each open junction narrower than CH_WJET_AREA; a jet already there keeps its flow */
+    {
+        const ch_real half_rho = R(0.5) * RHO;
+        ch_real u_old[CH_WMAX];
+        int j, nj = 0;
+        for (m = 0; m < w->n; m++)
+            u_old[m] = 0;
+        for (j = 0; j < w->n_jet; j++)
+            u_old[w->jet_m[j]] = w->jet_u[j];
+        for (m = 1; m < w->n && nj < 8; m++) {
+            ch_real a = target[m - 1], b = target[m], ia, ib, ef, eb;
+            if (m == w->jv || mn(a, b) >= (ch_real)CH_WJET_AREA || a < w->closed_area || b < w->closed_area)
+                continue;
+            ia = R(1.0) / a;
+            ib = R(1.0) / b;
+            ef = ia - ib;                              /* forward: out of a into b */
+            eb = ib - ia;
+            w->jet_m[nj] = (int16_t)m;
+            w->jet_kf[nj] = (ef > 0 ? half_rho * ef * ef : 0) + (eb > 0 ? R(0.1) * half_rho * eb * eb : 0);
+            w->jet_kb[nj] = (eb > 0 ? half_rho * eb * eb : 0) + (ef > 0 ? R(0.1) * half_rho * ef * ef : 0);
+            w->jet_u[nj] = u_old[m];
+            nj++;
+        }
+        w->n_jet = (uint8_t)nj;
+    }
+    /* the walls' area: each section's perimeter (CHIMERA's pharynx and oral, ~1.4 x a circle's) times its length */
+    {
+        ch_real sum_w = 0;
+        for (i = 0; i < w->n; i++)
+            sum_w += R(1.4) * R(2.0) * SQRT(CH_PI) * SQRT(mx(target[i], R(0.02))) * w->dx;
+        w->wall_s = sum_w;
+    }
+    /* the noise sources: CHIMERA's list, each one's filter kept while its source and target stay (as
+     * set_noise_sources), at the junctions nearest its places */
+    {
+        ch_noise_t next[4];
+        int16_t src[4], fwd[4], bwd[4];
+        int j, q;
+        for (j = 0; j < t->n_noise && j < 4; j++) {
+            const ch_real *s = t->noise_s[j];
+            next[j] = t->noise[j];
+            next[j].hp = next[j].lp1 = next[j].lp2 = 0;
+            src[j] = (int16_t)(s[0] <= 0 ? -1 : js_round_c(s[0] / per));
+            fwd[j] = (int16_t)js_round_c(s[1] / per);
+            bwd[j] = (int16_t)(s[2] < 0 ? 0 : js_round_c(s[2] / per));
+            if (src[j] >= 0)
+                src[j] = (int16_t)(src[j] < 1 ? 1 : src[j] > w->n - 1 ? w->n - 1 : src[j]);
+            fwd[j] = (int16_t)(fwd[j] < 1 ? 1 : fwd[j] > w->n - 1 ? w->n - 1 : fwd[j]);
+            bwd[j] = (int16_t)(bwd[j] > w->n - 1 ? w->n - 1 : bwd[j]);
+            for (q = 0; q < w->n_noise; q++)
+                if (w->noise[q].src == next[j].src && w->noise[q].fwd == next[j].fwd) {
+                    next[j].hp = w->noise[q].hp;
+                    next[j].lp1 = w->noise[q].lp1;
+                    next[j].lp2 = w->noise[q].lp2;
+                    break;
+                }
+        }
+        for (q = 0; q < j; q++) {
+            w->noise[q] = next[q];
+            w->n_src[q] = src[q];
+            w->n_fwd[q] = fwd[q];
+            w->n_bwd[q] = bwd[q];
+        }
+        w->n_noise = (uint8_t)j;
+    }
+}
+
+/* the glottis's volume flow: CHIMERA's port branch (inertance, slit resistance, entrance and exit losses) solved
+ * against the lungs' pressure and the pressure just above the glottis, together: that pressure is the wave
+ * arriving at the glottis and its reflection, (1 + r) l0, plus the flow's own push into the tract, Z0 U. Solved with
+ * the flow (Z0 joins the resistance) the coupling is stable; lagged a sample, an open glottis (a large flow for a
+ * small pressure) made it oscillate. */
+CH_HOT static ch_real glottal_flow(ch_wave_t *w, ch_real a_g, ch_real l0, ch_real a0)
+{
+    const ch_real half_rho = R(0.5) * RHO;
+    ch_real ip, l, r, kin, ex_f, ex_b, kf, kb, m0, c, bq, x, kk, u;
+    if (a_g < w->closed_area) {
+        w->mom = 0;
+        w->l_prev = 0;
+        return 0;
+    }
+    ip = R(1.0) / a_g;
+    l = RHO * w->port_len * ip + half_rho * w->dx / a0;
+    r = (R(12.0) * MU * w->port_len * w->port_slit * w->port_slit) * ip * ip * ip;
+    kin = w->port_kin * half_rho * ip * ip;
+    ex_f = ip - R(1.0) / a0;                          /* a flow up exits into the tract */
+    ex_b = ip - R(1.0) / R(2.5);                      /* and a flow down into the trachea (HumanAirway's 2.5 k² cm²) */
+    kf = kin + w->port_kex * half_rho * (ex_f > 0 ? ex_f * ex_f : 0);
+    kb = kin + w->port_kex * half_rho * (ex_b > 0 ? ex_b * ex_b : 0);
+    m0 = l < w->l_prev ? l * w->u_g : w->mom;          /* energy-safe, as CHIMERA */
+    c = w->p_lung_now - (R(1.0) + w->r_glottis) * l0 + m0 * w->fs;
+    bq = l * w->fs + r + w->rho_c / a0;
+    kk = c >= 0 ? kf : kb;
+    x = R(4.0) * kk * FABS(c) / (bq * bq);
+    u = (c / bq) * R(2.0) / (R(1.0) + SQRT(R(1.0) + x));
+    w->mom = l * u;
+    w->l_prev = l;
+    return u;
+}
+
+/* the turbulence: each source's flow, CHIMERA's law, its filtered noise as a series pressure source at its junction
+ * (half each way); after the scattering, into the waves just written (q) */
+CH_HOT static void noise(ch_wave_t *w, int p, int q, ch_real ug)
+{
+    const ch_real scale = SQRT(R(96000.0) / w->fs);   /* CHIMERA's noise: white noise power normalised to 96 kHz */
+    const ch_real sat = R(12000.0) * R(12000.0) - RE_CRIT * RE_CRIT;
+    int j;
+    for (j = 0; j < w->n_noise; j++) {
+        ch_noise_t *ns = &w->noise[j];
+        ch_real a, u, amp = 0, wn, hpo, v;
+        int at;
+        if (w->n_src[j] < 0) {
+            a = w->a_g;
+            u = ug;
+        } else {
+            const ch_wsec_t *s0 = &w->sec[w->n_src[j] - 1], *s1 = &w->sec[w->n_src[j]];
+            a = mn(s0->area, s1->area);
+            u = (s0->R[p] - s0->L[q]) * s0->area / w->rho_c;
+        }
+        if (a > w->closed_area) {
+            ch_real re = (FABS(u) * R(2.0)) / (NU * SQRT(CH_PI * a));
+            if (re > RE_CRIT) {
+                ch_real xx = re * re - RE_CRIT * RE_CRIT;
+                amp = (ns->gain * w->noise_gain * scale * xx) / (R(1.0) + xx / sat);
+            }
+        }
+        wn = rng_bipolar(&w->rng) * R(1.732);
+        ns->hp += (R(1.0) - ns->hp_coef) * (wn - ns->hp);
+        hpo = wn - ns->hp;
+        ns->lp1 += ns->lp_coef * (hpo - ns->lp1);
+        ns->lp2 += ns->lp_coef * (ns->lp1 - ns->lp2);
+        ns->level = amp;
+        if (amp == 0)
+            continue;
+        v = R(0.5) * amp * ns->lp2;
+        if (u < 0)
+            v = -v;
+        at = u >= 0 ? w->n_fwd[j] : w->n_bwd[j];
+        w->sec[at].R[q] += v;
+        if (at > 0)
+            w->sec[at - 1].L[q] -= v;
+    }
+}
+
+CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
+{
+    const int nt = w->n, nn = w->nn, jv = w->jv;
+    const ch_real fade = w->fade, fade_n = w->fade_n;
+    ch_wsec_t *const sec = w->sec;
+    ch_wnsec_t *const ns = w->nsec;
+    uint32_t i;
+    for (i = 0; i < n; i++) {
+        const int p = w->p, q = p ^ 1;
+        ch_real ug, x, hp, av, al, rad, y, r0, in, pj;
+        ch_wsec_t *s;
+        int m;
+        w->p_lung_now += w->p_lung_step;
+        /* the glottis: its area from the pressure across it, its flow (solved with the tract's push back) */
+        w->a_g = glottis_next(&w->glottis, w->p_lung_now - w->p_supra);
+        ug = w->u_g = glottal_flow(w, w->a_g, sec[0].L[p], mx(sec[0].area, R(1e-4)));
+        /* the walls: moved by the pressure above the glottis (CHIMERA's update, its constants per cm²) */
+        if (w->walls) {
+            const ch_real m_t = R(1.5) * w->fs, half_r = R(0.5) * R(1600.0);
+            ch_real v = ((m_t - half_r) * w->wall_v + w->p_supra - R(3.0e5) * w->wall_y) / (m_t + half_r);
+            w->wall_v = v;
+            w->wall_y += v / w->fs;
+            w->wall_u = w->wall_s * v;
+        }
+        /* the glottis's end: a flow source at a nearly rigid end, less what the walls take */
+        r0 = w->r_glottis * sec[0].L[p] + w->rho_c / mx(sec[0].area, R(1e-4)) * (ug - w->wall_u);
+        sec[0].R[q] = r0 * fade;
+        w->p_supra = sec[0].L[p] + r0;
+        /* the junctions below and above the nose's: the arriving waves, scattered (and the ramps) */
+        for (m = 1, s = sec + 1; m < jv; m++, s++) {
+            ch_real in1 = s[-1].R[p], in2 = s->L[p], d = s->k * (in1 - in2);
+            s->R[q] = (in1 + d) * fade;
+            s[-1].L[q] = (in2 + d) * fade;
+            s->k += s->dk;
+            s[-1].area += s[-1].darea;
+        }
+        /* the nose's junction */
+        {
+            ch_real in1 = sec[jv - 1].R[p], in2 = sec[jv].L[p], in3 = ns[0].L[p];
+            w->w1 += w->dw1;
+            w->w2 += w->dw2;
+            w->w3 += w->dw3;
+            pj = w->w1 * in1 + w->w2 * in2 + w->w3 * in3;
+            sec[jv].R[q] = (pj - in2) * fade;
+            sec[jv - 1].L[q] = (pj - in1) * fade;
+            ns[0].R[q] = (pj - in3) * fade_n;
+            sec[jv].k += sec[jv].dk;
+            sec[jv - 1].area += sec[jv - 1].darea;
+        }
+        for (m = jv + 1, s = sec + jv + 1; m < nt; m++, s++) {
+            ch_real in1 = s[-1].R[p], in2 = s->L[p], d = s->k * (in1 - in2);
+            s->R[q] = (in1 + d) * fade;
+            s[-1].L[q] = (in2 + d) * fade;
+            s->k += s->dk;
+            s[-1].area += s[-1].darea;
+        }
+        sec[nt - 1].area += sec[nt - 1].darea;
+        /* the jets: those junctions again, with the series resistance (the loss times last sample's flow), from
+         * the sections' areas as they are now (from the target's, a release opened in one sample: a spike):
+         * U = 2 (in1 - in2) / (Z1 + Z2 + R), out right in2 + Z2 U, out left in1 - Z1 U */
+        for (m = 0; m < w->n_jet; m++) {
+            const int jm = w->jet_m[m];
+            const ch_real a1 = sec[jm - 1].area, a2 = sec[jm].area;
+            ch_real in1, in2, up, rj, z1, z2, u;
+            if (a1 < w->closed_area || a2 < w->closed_area) {
+                w->jet_u[m] = 0;
+                continue;                       /* still closed on one side: the plain scattering's reflection */
+            }
+            in1 = sec[jm - 1].R[p];
+            in2 = sec[jm].L[p];
+            up = w->jet_u[m];
+            rj = (up >= 0 ? w->jet_kf[m] : w->jet_kb[m]) * FABS(up);
+            z1 = w->rho_c / a1;
+            z2 = w->rho_c / a2;
+            u = R(2.0) * (in1 - in2) / (z1 + z2 + rj);
+            sec[jm].R[q] = (in2 + z2 * u) * fade;
+            sec[jm - 1].L[q] = (in1 - z1 * u) * fade;
+            w->jet_u[m] = u;
+        }
+        /* a section shut (or still shut) holds no air: its waves emptied while its area is under the closure's */
+        for (m = 0; m < w->n_shut; m++) {
+            ch_wsec_t *c = &sec[w->shut[m]];
+            if (c->area < w->closed_area)
+                c->R[q] = c->L[q] = 0;
+        }
+        /* the lips: the radiation load's reflection */
+        in = sec[nt - 1].R[p];
+        if (w->rad_load) {
+            y = w->rb0[0] * in + w->rb1[0] * w->r_in[0] - w->ra1[0] * w->r_out[0];
+            w->r_in[0] = in;
+            w->r_out[0] = y;
+        } else {
+            y = w->r_lip * in;
+        }
+        sec[nt - 1].L[q] = y * fade;
+        rad = (in - y) * sec[nt - 1].area;
+        /* the nose's junctions and the nostrils */
+        for (m = 1; m < nn; m++) {
+            ch_real in1 = ns[m - 1].R[p], in2 = ns[m].L[p], d = ns[m].k * (in1 - in2);
+            ns[m].R[q] = (in1 + d) * fade_n;
+            ns[m - 1].L[q] = (in2 + d) * fade_n;
+        }
+        in = ns[nn - 1].R[p];
+        if (w->rad_load) {
+            y = w->rb0[1] * in + w->rb1[1] * w->r_in[1] - w->ra1[1] * w->r_out[1];
+            w->r_in[1] = in;
+            w->r_out[1] = y;
+        } else {
+            y = w->r_nose * in;
+        }
+        ns[nn - 1].L[q] = y * fade_n;
+        rad = (rad + (in - y) * ns[nn - 1].area) / w->rho_c   /* the flow leaving the lips and the nostrils */
+              + R(0.25) * w->wall_u;                          /* and the walls' share */
+        /* the turbulence, into the waves just written */
+        if (w->n_noise)
+            noise(w, p, q, ug);
+        w->p = q;
+#ifdef CH_WAVE_DEBUG
+        {
+            extern long ch_wave_dbg_from, ch_wave_dbg_pos;
+            if (ch_wave_dbg_pos >= ch_wave_dbg_from && ch_wave_dbg_pos < ch_wave_dbg_from + 24) {
+                int qq, mi = 0;
+                for (qq = 1; qq < nt; qq++)
+                    if (sec[qq].area < sec[mi].area)
+                        mi = qq;
+                printf("    %ld: rad %7.2f | area/press/flow per section 15..21:", ch_wave_dbg_pos, (double)rad);
+                for (qq = 15; qq < nt; qq++)
+                    printf("  [%d %.3f %6.0f %6.1f]", qq, (double)sec[qq].area, (double)(sec[qq].R[q] + sec[qq].L[p]),
+                           (double)((sec[qq].R[q] - sec[qq].L[p]) * sec[qq].area / w->rho_c));
+                printf("\n");
+                (void)mi;
+            }
+            ch_wave_dbg_pos++;
+        }
+#endif
+        /* the output: the radiated flow's derivative, CHIMERA's DC blocker and limiter */
+        if (w->len_changed) {               /* the lips moved a section: no jump in the derivative */
+            w->rad_prev = rad;
+            w->len_changed = 0;
+        }
+        y = (rad - w->rad_prev) * w->fs;
+        w->rad_prev = rad;
+        x = y * w->output_gain;
+        hp = x - w->dc_x + w->dc_coef * w->dc_y;
+        w->dc_x = x;
+        w->dc_y = hp;
+        x = hp;
+        av = FABS(x);
+        if (av >= w->lim_env) {
+            w->lim_env = av;
+            w->lim_hold = w->lim_hold_n;
+        } else if (w->lim_hold > 0) {
+            w->lim_hold -= 1;
+        } else {
+            w->lim_env *= w->lim_release;
+        }
+        if (w->lim_env > R(0.75))
+            x *= R(0.75) / w->lim_env;
+        al = FABS(x);
+        if (al > R(0.85))
+            x = (x < 0 ? R(-1.0) : R(1.0)) * (R(0.85) + R(0.15) * TANH((al - R(0.85)) / R(0.15)));
+        out[i] = (float)x;
+    }
+}

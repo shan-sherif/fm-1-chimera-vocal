@@ -1,0 +1,12 @@
+# The timing test in the host simulator: hold a key (the voice sings the held vowel), then the posture swing.
+#   python base/tools/build.py app --host; app/build/host/vocal_host app/tests/timing.txt app/build/host
+wait 500
+wav sing.wav
+key 7 down
+wait 1500
+tap PLAY
+wait 1500
+shot timing.png
+key 7 up
+wait 400
+wavstop
