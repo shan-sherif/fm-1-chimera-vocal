@@ -17,6 +17,16 @@
 > This is an independent, unofficial project, not affiliated with or endorsed by Jameson Hodge, Charles Vestal,
 > Hügelton Instruments, Ellic Studio or M-VAVE. "M-VAVE" and "FM-1" are trademarks of their owners.
 
+## Links
+
+- **[The site](https://shan-sherif.github.io/fm-1-chimera-vocal/)**: the front page, with the previews below.
+- **[Studio](https://shan-sherif.github.io/fm-1-chimera-vocal/studio/)**: prepare the words, try them on the emulated
+  FM-1, send them to yours (Chrome or Edge).
+- **[Install](https://shan-sherif.github.io/fm-1-chimera-vocal/install/)**: put the firmware on your FM-1 over USB
+  (Chrome or Edge); it can put M-VAVE's own firmware back too.
+- **[Manual](https://shan-sherif.github.io/fm-1-chimera-vocal/manual/)**: the keys, buttons, knobs and screens
+  ([its source](app/docs/MANUAL.md)).
+
 ## What this is
 
 Firmware for the M-VAVE FM-1 that does one thing: a simulated human voice. Every sound comes from a simulated airway
@@ -58,6 +68,11 @@ lab: identical gestures). Words are sent from the Studio; typing them on the FM-
   2nd control step (`ANAT_EVERY` in `app/app.c`; every 4th now).
 - **Expression:** the keys' pressure and MIDI's mod wheel and pitch bend (vibrato, breath).
 - **The beatbox** (CHIMERA's, on SEQ, with a 2D view).
+- **A cleanup of the folders:** fm1-base's template leftovers (`app/README.md`, the template's tests
+  `app/tests/basic.txt` and `screens.txt`, which test the template's behaviour), the superseded `app/tests/timing.txt`
+  and `lab/tools/gen_phrase_header.py` (it made the phrase header the front end replaced), the template's unused code
+  in `app/app.c` (`WAVE_NAME`, `BTN_NAME`, `ENC_NAME`, the `wave` setting), and old local build outputs
+  (`app/build/vocal-*`).
 
 ## Two cores
 
@@ -126,7 +141,7 @@ The site, with the web installer, the Studio and the emulator (Chrome or Edge, t
 It is fm1-base's site (`base/tools/make_site.py`) with CHIMERA's credit at the top of each page, the Studio
 (`studio/`, with CHIMERA's copy of CMUdict beside it) and the emulator (`emu/`, embedded in the Studio), in CHIMERA's
 colours, with the licence texts beside the package. The pages count visits with
-[GoatCounter](https://www.goatcounter.com/) (shan-sherif.goatcounter.com: no cookies, no personal data; local previews
+[GoatCounter](https://www.goatcounter.com/) (no cookies, no personal data; local previews
 are not counted). The firmware build runs the toolchain in Docker, which now and then crashes with nothing wrong in the
 build; the site build tries it up to three times. `sh tools/manual_shots.sh` retakes the manual's screenshots,
 `.venv/bin/python tools/landing_anims.py` the front page's animated previews (`app/site/img/`).
