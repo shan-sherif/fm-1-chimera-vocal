@@ -1,5 +1,5 @@
 # The timing test in the host simulator: hold a key (the voice sings the held vowel), then PLAY speaks the phrase over it.
-#   python base/tools/build.py app --host; app/build/host/vocal_host app/tests/timing.txt app/build/host
+#   python base/tools/build.py app --host; app/build/host/chimera_host app/tests/timing.txt app/build/host
 wait 500
 wav sing.wav
 key 7 down

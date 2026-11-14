@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Shan-Sherif
 //! `lab record`: CHIMERA's voice, recorded at the boundary between its control rate and its audio
 //! rate, so the C port of the audio rate (port/) can replay it and be compared sample by sample.
 //!

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * CHIMERA's audio-rate voice in C: the branched FDTD airway (crates/chimera/src/airway/network.rs),
  * the parametric glottis (sources/glottis.rs) and the per-sample part of HumanVoice::render

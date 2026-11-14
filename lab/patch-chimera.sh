@@ -1,4 +1,6 @@
 #!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Shan-Sherif
 # Make the private fields of CHIMERA's airway, glottis and voice structs public, so `lab record`
 # can read the network's per-block targets. Only visibility changes: the sound is untouched.
 # Idempotent. Run from anywhere: sh lab/patch-chimera.sh

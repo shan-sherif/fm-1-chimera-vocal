@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * The FM-1's tract: a Kelly-Lochbaum waveguide driven by CHIMERA's anatomy, glottis and noise sources; see
  * ch_wave.h. The glottis's flow, the noise law and the output stage are CHIMERA's (crates/chimera/src/airway/
@@ -12,6 +12,9 @@
  * and each wave leaves as that pressure less the one arriving from its side (the two-port case is the same). A
  * section's volume flow is (p+ - p-) A / (rho c). Each sample reads one wave buffer and writes the other. */
 #define CH_RAM   /* the audio rate in RAM on the FM-1 (ch_common.h CH_HOT) */
+#ifdef CH_WAVE_NANCHECK
+#include <stdio.h>
+#endif
 #include "ch_wave.h"
 #include "ch_common.h"
 #ifdef CH_WAVE_DEBUG
@@ -24,9 +27,14 @@ static ch_real nose_area(ch_real u, ch_real k)   /* HumanAirway's nasal profile,
     return a * k * k;
 }
 
+/* a junction's reflection, |k| <= 1. (The areas clamped at 0: a closing section ramps to 0 and float leaves it at
+ * +-1e-9; with two such, k came out at -3.7 and the tract blew up: 0.0.8, silent for good after some playing) */
 CH_INLINE ch_real refl(ch_real a1, ch_real a2)
 {
-    ch_real s = a1 + a2;
+    ch_real s;
+    a1 = a1 > 0 ? a1 : 0;
+    a2 = a2 > 0 ? a2 : 0;
+    s = a1 + a2;
     return s > R(1e-9) ? (a1 - a2) / s : 0;
 }
 
@@ -78,6 +86,7 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
     w->vol_smooth = R(0.003);                 /* (~8 ms) */
     w->narrowest = 1;
     w->vol_u = w->vol_goal = 0;
+    w->resets = 0;
     w->vol_ok = 0;
     w->vol_cells = 0;
     w->wall_s = w->wall_v = w->wall_y = w->wall_u = 0;
@@ -183,6 +192,17 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     tiny(&w->dc_x);
     tiny(&w->dc_y);
     tiny(&w->lim_env);
+#ifdef CH_WAVE_NANCHECK
+    {
+        static int since, told;
+        since = t ? 0 : since + 1;
+        if (told < 6 && (w->w1 < -1e-3 || w->w2 < -1e-3 || w->w3 < -1e-3 || w->w1 > 2.001 || w->w2 > 2.001 || w->w3 > 2.001)) {
+            told++;
+            fprintf(stderr, "nose weights out of range: %g %g %g (d %g %g %g), jv %d, %d blocks since a shape, steps %d\n",
+                    (double)w->w1, (double)w->w2, (double)w->w3, (double)w->dw1, (double)w->dw2, (double)w->dw3, w->jv, since, steps);
+        }
+    }
+#endif
     if (!t)
         return;                                 /* no new shape: the tract glides on */
     inv = inv1 / (ch_real)(steps < 1 ? 1 : steps);
@@ -205,6 +225,8 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     for (i = 0; i < w->n; i++) {
         target[i] = tube_area(w, t, (ch_real)i * per, (ch_real)(i + 1) * per, w->closed_area, &tmin[i]);
         tmin[i] = mn(tmin[i], target[i]);
+        if (w->sec[i].area < 0)                /* (a ramp to 0 that float left a hair below) */
+            w->sec[i].area = 0;
         w->sec[i].darea = (target[i] - w->sec[i].area) * inv;
     }
     /* the sections shut now or by the end of the step */
@@ -247,18 +269,18 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     /* the nose: where it joins, the port's area as its first section */
     m = (int)js_round_c(t->ph_len / per);
     w->jv = m < 1 ? 1 : m > w->n - 1 ? w->n - 1 : m;
-    /* (its weights likewise restart from the areas now, at its junction) */
-    a1 = w->sec[w->jv - 1].area;
-    a2 = w->sec[w->jv].area;
-    a3 = w->nsec[0].area;
+    /* (its weights likewise restart from the areas now, at its junction; clamped at 0, as refl's) */
+    a1 = mx(0, w->sec[w->jv - 1].area);
+    a2 = mx(0, w->sec[w->jv].area);
+    a3 = mx(0, w->nsec[0].area);
     sum = a1 + a2 + a3;
     if (sum > R(1e-9)) {
         w->w1 = R(2.0) * a1 / sum;
         w->w2 = R(2.0) * a2 / sum;
         w->w3 = R(2.0) * a3 / sum;
     }
-    a1 = target[w->jv - 1];
-    a2 = target[w->jv];
+    a1 = mx(0, target[w->jv - 1]);
+    a2 = mx(0, target[w->jv]);
     a3 = mx(0, t->velum_port_area);
     sum = a1 + a2 + a3;
     if (sum > R(1e-9)) {
@@ -553,6 +575,28 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
             ch_wave_dbg_pos++;
         }
 #endif
+#ifdef CH_WAVE_NANCHECK
+        {   /* (lab / host: the first sample whose state is not a number, and what led to it) */
+            static int told;
+            if (!told && !(w->p_supra < 1e5 && w->p_supra > -1e5)) {
+                int qq;
+                told = 1;
+                fprintf(stderr, "wave out of range: rad %g ug %g a_g %g p_supra %g p_lung %g vol_u %g wall_v %g y %g\n", (double)rad,
+                        (double)ug, (double)w->a_g, (double)w->p_supra, (double)w->p_lung_now, (double)w->vol_u,
+                        (double)w->wall_v, (double)w->wall_y);
+                fprintf(stderr, "  glottis: mom %g l_prev %g u_g %g\n", (double)w->mom, (double)w->l_prev, (double)w->u_g);
+                for (qq = 0; qq < nt; qq++)
+                    fprintf(stderr, "  sec %2d area %9.5f darea %9.2e k %8.5f dk %9.2e R %10.4g L %10.4g\n", qq, (double)sec[qq].area,
+                            (double)sec[qq].darea, (double)sec[qq].k, (double)sec[qq].dk, (double)sec[qq].R[q], (double)sec[qq].L[q]);
+                for (qq = 0; qq < w->n_jet; qq++)
+                    fprintf(stderr, "  jet at %d: kf %g kb %g u %g\n", w->jet_m[qq], (double)w->jet_kf[qq], (double)w->jet_kb[qq], (double)w->jet_u[qq]);
+                for (qq = 0; qq < w->n_noise; qq++)
+                    fprintf(stderr, "  noise %d: src %d fwd %d level %g\n", qq, w->n_src[qq], w->n_fwd[qq], (double)w->noise[qq].level);
+                fprintf(stderr, "  nose: w1 %g w2 %g w3 %g jv %d; rad filter %g %g %g\n", (double)w->w1, (double)w->w2, (double)w->w3, jv,
+                        (double)w->rb0[0], (double)w->rb1[0], (double)w->ra1[0]);
+            }
+        }
+#endif
         /* the output: the radiated flow's derivative, CHIMERA's DC blocker and limiter */
         if (w->len_changed) {               /* the lips moved a section: no jump in the derivative */
             w->rad_prev = rad;
@@ -580,5 +624,23 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
         if (al > R(0.85))
             x = (x < 0 ? R(-1.0) : R(1.0)) * (R(0.85) + R(0.15) * TANH((al - R(0.85)) / R(0.15)));
         out[i] = (float)x;
+    }
+    /* the safety net: a state that is no longer a number stays so (the voice silent until power-off), so it is
+     * cleared, the shape and the glottis kept. (0.0.8's nose junction did this; ch_wave_t.resets counts them) */
+    if (!(w->p_supra == w->p_supra && w->p_supra < R(1e7) && w->p_supra > R(-1e7) && w->rad_prev == w->rad_prev)) {
+        int m;
+        for (m = 0; m < CH_WMAX; m++)
+            w->sec[m].R[0] = w->sec[m].R[1] = w->sec[m].L[0] = w->sec[m].L[1] = 0;
+        for (m = 0; m < CH_WNMAX; m++)
+            w->nsec[m].R[0] = w->nsec[m].R[1] = w->nsec[m].L[0] = w->nsec[m].L[1] = 0;
+        for (m = 0; m < 8; m++)
+            w->jet_u[m] = 0;
+        w->u_g = w->l_prev = w->mom = w->p_supra = 0;
+        w->wall_v = w->wall_y = w->wall_u = w->vol_u = 0;
+        w->r_in[0] = w->r_in[1] = w->r_out[0] = w->r_out[1] = 0;
+        w->rad_prev = w->dc_x = w->dc_y = w->lim_env = 0;
+        for (i = 0; i < n; i++)
+            out[i] = 0;
+        w->resets++;
     }
 }

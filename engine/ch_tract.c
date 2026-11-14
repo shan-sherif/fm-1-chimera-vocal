@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * A literal port of CHIMERA's anatomy at control rate; see ch_tract.h. The comments are CHIMERA's
  * (crates/chimera/src/anatomy/human.rs, anatomy/geom.rs, voice/human_airway.rs), shortened. */
@@ -180,7 +180,7 @@ static void arc(ch_v2 c, ch_real r, ch_real a0, ch_real a1, int count, ch_v2 *ou
         out[i] = polar(c, r, a0 + ((a1 - a0) * (ch_real)i) / ((ch_real)count - R(1.0)));
 }
 
-static int catmull_rom(const ch_v2 *pts, int n, int per, ch_v2 *out)
+int ch_catmull_rom(const ch_v2 *pts, int n, int per, ch_v2 *out)
 {
     int i, k, m = 0;
     for (i = 0; i < n - 1; i++) {
@@ -334,6 +334,9 @@ static ch_v2 P(const ch_tract_t *t, ch_real x, ch_real y)
     return v2(xx * t->k, yy * t->k);
 }
 
+ch_v2 ch_tract_point(const ch_tract_t *t, ch_real x, ch_real y) { return P(t, x, y); }
+ch_v2 ch_tract_jaw_point(const ch_tract_t *t, ch_real x, ch_real y) { return rotate_about(P(t, x, y), t->condyle, t->jaw_phi); }
+
 void ch_tract_init(ch_tract_t *t, ch_real scale, ch_real pharynx, ch_real tongue_radius, ch_real lip_width)
 {
     ch_v2 pw[9], pal[12];
@@ -344,19 +347,20 @@ void ch_tract_init(ch_tract_t *t, ch_real scale, ch_real pharynx, ch_real tongue
     pw[0] = P(t, R(-1.0), R(-1.5)); pw[1] = P(t, R(-1.1), R(1.5)); pw[2] = P(t, R(-1.2), R(3.6));
     pw[3] = P(t, R(-1.3), R(5.6)); pw[4] = P(t, R(-1.38), R(7.5)); pw[5] = P(t, R(-1.33), R(8.9));
     pw[6] = P(t, R(-1.05), R(10.1)); pw[7] = P(t, R(-0.45), R(10.9)); pw[8] = P(t, R(0.4), R(11.3));
-    t->n_phar_wall = catmull_rom(pw, 9, 4, t->phar_wall);
+    t->n_phar_wall = ch_catmull_rom(pw, 9, 4, t->phar_wall);
     t->pns = P(t, R(1.0), R(9.75));
     pal[0] = P(t, R(1.0), R(9.6)); pal[1] = P(t, R(1.8), R(9.92)); pal[2] = P(t, R(2.7), R(10.18));
     pal[3] = P(t, R(3.6), R(10.3)); pal[4] = P(t, R(4.4), R(10.25)); pal[5] = P(t, R(5.1), R(10.05));
     pal[6] = P(t, R(5.7), R(9.72)); pal[7] = P(t, R(6.15), R(9.36)); pal[8] = P(t, R(6.5), R(9.05));
     pal[9] = P(t, R(6.78), R(8.7)); pal[10] = P(t, R(6.98), R(8.3)); pal[11] = P(t, R(7.12), R(7.95));
-    t->n_palate = catmull_rom(pal, 12, 3, t->palate);
+    t->n_palate = ch_catmull_rom(pal, 12, 3, t->palate);
     t->condyle = P(t, R(-2.5), R(10.5));
     t->polar_c = P(t, R(2.6), R(6.95));
     t->polar_c2 = P(t, R(5.0), R(6.85));
     t->contact_tip = t->contact_body = 1;
     t->contact_tip_n = t->contact_body_n = v2(0, -1);
     t->have_base = 0;
+    t->draw = 0;
     t->ph_len = R(8.8);
     t->or_len = R(8.3);
 }
@@ -473,6 +477,7 @@ static void compute(ch_tract_t *t, const ch_real *a)
     jaw_ref = P(t, R(6.95), R(7.75));
     jaw_r = dist(t->condyle, jaw_ref);
     phi = -clampr(a[CH_JAW], R(-0.2), R(3.0)) * k / jaw_r;
+    t->jaw_phi = phi;
 
     /* ---- velum flap from PNS; angle from port area */
     v_open = clampr(a[CH_VELUM] / R(1.2), 0, 1);
@@ -794,6 +799,39 @@ static void compute(ch_tract_t *t, const ch_real *a)
     }
     t->velum_port_area = mx(0, a[CH_VELUM]) * k * k;
     t->tip = tip;
+    if (t->draw) {   /* the drawing parts (HumanVocalTract::compute's last lines) */
+        int n = 0, q;
+        for (q = 0; q < 9; q++)
+            t->d_tongue[n++] = t->root[q];
+        for (q = 1; q < 32; q++)
+            t->d_tongue[n++] = t->arc_pts[q];
+        for (q = 1; q < 7; q++)
+            t->d_tongue[n++] = t->blade[q];
+        for (q = 1; q < 6; q++)
+            t->d_tongue[n++] = t->under[q];
+        for (q = 1; q < 3; q++)
+            t->d_tongue[n++] = floor_[q];
+        t->n_tongue = n;
+        bezier3(ul_edge, add(ul_edge, v2(R(0.25) * k, R(0.35) * k)), P(t, R(8.3), R(9.6)), P(t, R(7.9), R(10.4)), 6, t->d_ulip_out);
+        bezier3(ll_edge, add(ll_edge, v2(R(0.3) * k, R(-0.4) * k)), J(8.1, 6.3), J(7.6, 5.6), 6, t->d_llip_out);
+        t->d_jaw_bone[0] = J(7.25, 6.75);
+        t->d_jaw_bone[1] = J(7.4, 5.4);
+        t->d_jaw_bone[2] = J(6.4, 4.6);
+        t->d_jaw_bone[3] = J(3.5, 4.4);
+        t->d_jaw_bone[4] = J(1.2, 5.2);
+        t->d_jaw_bone[5] = J(-0.6, 7.4);
+        t->d_jaw_bone[6] = J(-1.9, 9.6);
+        t->d_upper_teeth[0] = P(t, R(6.15), R(9.36));
+        t->d_upper_teeth[1] = P(t, R(6.78), R(8.7));
+        t->d_upper_teeth[2] = P(t, R(7.12), R(7.95));
+        t->d_upper_teeth[3] = P(t, R(7.38), R(8.7));
+        t->d_upper_teeth[4] = P(t, R(7.4), R(9.3));
+        for (q = 0; q < 4; q++)
+            t->d_lower_teeth[q] = lower_teeth[q];
+        t->d_glottis = glottis;
+        t->d_tongue_c = b;
+        t->d_tongue_r = r;
+    }
 #undef J
 }
 

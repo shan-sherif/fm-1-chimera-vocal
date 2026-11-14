@@ -1,0 +1,27 @@
+# The manual's screenshots (tools/manual_shots.sh copies them into app/docs/img): WORDS singing, a page of knobs,
+# VOWEL mode. (Not the debug page: the simulator does not measure the cores, it would read 0 %.)
+#   app/build/host/chimera_host app/tests/manual_shots.txt app/build/host/shots
+wait 300
+key 7 down
+wait 250
+key 9 down
+key 7 up
+wait 350
+shot home-words.png
+key 9 up
+wait 300
+turn SELECT 3
+wait 1600
+shot page-source.png
+tap HOME
+wait 200
+tap FX
+wait 900
+key 7 down
+wait 300
+spin K1 22
+spin K2 18
+wait 700
+shot home-vowel.png
+key 7 up
+wait 300

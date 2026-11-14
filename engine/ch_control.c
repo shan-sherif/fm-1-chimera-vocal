@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * A literal port of CHIMERA's control rate; see ch_control.h. The comments are CHIMERA's, shortened. */
 #include "ch_control.h"
@@ -15,15 +15,15 @@ static const ch_real SPEC_MIN[CH_NARTIC] = {-0.1, 1.0, 4.8, 3.5, 5.0, 0.0, -1.0,
 static const ch_real SPEC_MAX[CH_NARTIC] = {2.6, 4.8, 9.2, 8.0, 10.8, 1.0, 1.0, 2.4, 1.5, 1.0, 1.0, 1.4, 1.6, 1.0, 1.0, 1.0, 1.0};
 static const ch_real SPEC_HZ[CH_NARTIC] = {10.0, 12.0, 12.0, 13.0, 13.0, 9.0, 9.0, 11.0, 11.0, 11.0, 10.0, 12.0, 8.0, 6.0, 6.0, 10.0, 9.0};
 /* NEUTRAL (schwa-like), template coordinates */
-static const ch_real NEUTRAL[CH_NARTIC] = {0.6, 2.9, 6.85, 6.45, 7.3, 0.0, 0.0, 0.7, 0.2, 0.5, 0.0, -0.15, 0.0, 0.0, 0.0, 0.0, 0.0};
+const ch_real CH_NEUTRAL[CH_NARTIC] = {0.6, 2.9, 6.85, 6.45, 7.3, 0.0, 0.0, 0.7, 0.2, 0.5, 0.0, -0.15, 0.0, 0.0, 0.0, 0.0, 0.0};
 
 /* the tongue tip's rest behind the lower incisors, carried by the jaw and dragged by the tongue body */
 static void rest_tip(ch_real jaw, ch_real tb_x, ch_real tb_y, ch_real *x, ch_real *y)
 {
     const ch_real cx = R(-2.5), cy = R(10.5), px = R(6.45), py = R(7.35);
     ch_real ang = -jaw / R(9.84), dx = px - cx, dy = py - cy;
-    *x = cx + dx * COS(ang) - dy * SIN(ang) + R(0.3) * (tb_x - NEUTRAL[CH_TB_X]);
-    *y = cy + dx * SIN(ang) + dy * COS(ang) + R(0.35) * (tb_y - NEUTRAL[CH_TB_Y]);
+    *x = cx + dx * COS(ang) - dy * SIN(ang) + R(0.3) * (tb_x - CH_NEUTRAL[CH_TB_X]);
+    *y = cy + dx * SIN(ang) + dy * COS(ang) + R(0.35) * (tb_y - CH_NEUTRAL[CH_TB_Y]);
 }
 
 /* advance the dynamics; with blend, each key's gesture blend joins the performer's target at base_weight */
@@ -215,11 +215,11 @@ void ch_control_init(ch_control_t *c, ch_real fs, int ctrl_every, ch_real body_s
     static const ch_glottis_params_t DEFAULT_GLOTTIS = {110.0, 0.16, 0.0, 0.006, 0.62, 0.62, 0.6, 0.7, 0.004, 0.03, 0.0, 6.0, 6.0, 0.0, 0.0, 0.0, 0.0};
     int i;
     for (i = 0; i < CH_NARTIC; i++) {
-        c->x[i] = c->target[i] = c->effective[i] = NEUTRAL[i];
+        c->x[i] = c->target[i] = c->effective[i] = CH_NEUTRAL[i];
         c->v[i] = 0;
         c->speed[i] = 1;
     }
-    rest_tip(NEUTRAL[CH_JAW], NEUTRAL[CH_TB_X], NEUTRAL[CH_TB_Y], &c->x[CH_TT_X], &c->x[CH_TT_Y]);
+    rest_tip(CH_NEUTRAL[CH_JAW], CH_NEUTRAL[CH_TB_X], CH_NEUTRAL[CH_TB_Y], &c->x[CH_TT_X], &c->x[CH_TT_Y]);
     c->target[CH_TT_X] = c->x[CH_TT_X];
     c->target[CH_TT_Y] = c->x[CH_TT_Y];
     c->tip_free = 1;

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Shan-Sherif
 """Estimate the per-sample cost of a function on the FM-1 (pi32v2) from the compiler's assembly (clang -S).
 
 The assembly marks every basic block with its loop: "Loop Header: Depth=d" / "in Loop: Header=BBx Depth=d".

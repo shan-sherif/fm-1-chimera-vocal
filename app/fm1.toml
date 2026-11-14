@@ -1,21 +1,23 @@
 # Build settings (fm1-base tools/build.py). Started from fm1-base's template.
-name = "VOCAL"                 # the build's file names; APP_NAME is in app.h (working name, not final)
+name = "CHIMERA"               # the build's file names (chimera-X.Y.Z.fwsc); APP_NAME is in app.h. The pages say "FM-1 Chimera Vocal"
+version = "0.4.0"             # the release: the site (GitHub Pages, on a push to main), the package, the boot screen
 id_prefix = "FM-1_042"         # package identity, the same number for every version: the plain identity (what
                                # M-UPGRADE and the plain handshake read) is always FM-1_042; dev builds are FM-1_04200,
                                # releases FM-1_042XXYYZZ (the version, for the installer's check after an install)
 usb_manufacturer = "fm-1-chimera-vocal"
-usb_product = "VOCAL FM-1"
-o2 = ["../engine/ch_tract.c", "../engine/ch_wave.c", "../engine/ch_control.c"]   # the voice (CHIMERA's port, MIT), each at -O2
+usb_product = "CHIMERA FM-1"
+o2 = ["../engine/ch_tract.c", "../engine/ch_wave.c", "../engine/ch_control.c", "../engine/ch_speech.c", "../engine/ch_live.c", "../engine/ch_profile.c"]   # the voice (CHIMERA's port, MIT), each at -O2
 o2_cflags = ["-DCH_FM1"]       # the engine's maths from fm1-base's fastmath.h
 include = ["../engine", "dsp"]
 cpu2 = true                    # the airway renders on the second core
 cpu2_fallback = true           # if the second core fails: one core until power-off, not a restart
 words = "words.tsv"
-ble = false                    # no radio: the voice needs the RAM and the CPU
+ble = false
+emu = ["midi", "port"]          # the browser emulator: USB MIDI (the Studio's SysEx) and a port other pages reach                    # no radio: the voice needs the RAM and the CPU
 # the site (tools/make_site.py, tools/publish_site.sh)
 tagline = "a physically modelled human voice for the M-VAVE FM-1, ported from CHIMERA"
 repo = "https://github.com/shan-sherif/fm-1-chimera-vocal"
-licence = "MPL-2.0"
+licence = "MPL-2.0 AND MIT"   # fm1-base's and the template's files MPL-2.0, CHIMERA's port and this project's MIT (LICENSE)
 credits = "A port of CHIMERA by Jameson Hodge (MIT, github.com/jamesondh/chimera-vocal-synth), on fm1-base by Charles Vestal and felucca-bsp by Leo Kuroshita (MPL-2.0)."
 # firmware.json, for firmware hubs (fm1-base docs/FIRMWARE-JSON.md)
 author = "shan-sherif"
@@ -23,4 +25,4 @@ description = "A simulated human voice: lungs, vocal folds, throat, mouth and no
 tags = ["synth", "experimental"]
 install = "https://shan-sherif.github.io/fm-1-chimera-vocal/install/"
 site = "https://shan-sherif.github.io/fm-1-chimera-vocal/"
-screenshot = "app/docs/img/screen-playing.png"
+screenshot = "app/docs/img/home-words.png"

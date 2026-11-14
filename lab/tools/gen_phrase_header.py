@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Shan-Sherif
 # fm-1-chimera-vocal: a phrase CHIMERA planned (its gestures and voice source, from a `lab record`'s .gst) as a C
 # header for the firmware (app/dsp/phrase_male.h), which speaks it through the C control (engine/ch_control.c). A
 # stand-in until CHIMERA's text front end and planner are ported: the numbers are CHIMERA's

@@ -1,3 +1,8 @@
 external/
 .venv/
 core
+private/
+__pycache__/
+
+# my own release checklist (not published)
+CHECKLIST.md

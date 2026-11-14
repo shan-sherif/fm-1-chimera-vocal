@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * The FM-1's tract: a Kelly-Lochbaum waveguide driven by CHIMERA's anatomy (ch_tract.c), its glottis and its noise
  * sources, in place of CHIMERA's FDTD airway (ch_voice.c, ch_fast.c), which is about twice what the FM-1 can run
@@ -104,6 +104,7 @@ typedef struct {
     /* the output: CHIMERA's gain, DC blocker and limiter */
     ch_real rad_prev, output_gain, dc_x, dc_y, dc_coef, lim_env, lim_release;
     int32_t lim_hold, lim_hold_n;
+    uint32_t resets;                        /* times the state stopped being a number and was cleared (should stay 0) */
 } ch_wave_t;
 
 /* a body's waveguide: section counts from its neutral tract length (cm), the nose's from its length */

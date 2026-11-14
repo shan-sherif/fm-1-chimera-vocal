@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * CHIMERA's audio rate, rearranged to fit the FM-1. The physics is CHIMERA's (ch_voice.c is the
  * literal port it is measured against); what changes is how often the geometry is computed, and

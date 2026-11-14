@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * CHIMERA's control rate in C: the articulators' dynamics (crates/chimera/src/control/articulators.rs), the gestural
  * score (control/score.rs), the voice source's settings (voice/human_voice.rs VoiceSource, apply_source) and the
@@ -15,7 +15,7 @@
 #define CH_NCONTROL (CH_NARTIC + CH_NSOURCE)
 enum { CH_ABDUCTION = CH_NARTIC, CH_CLOSURE, CH_BREATH, CH_F0, CH_VIBRATO };
 #ifndef CH_SCORE_CAP
-#define CH_SCORE_CAP 128      /* gestures the score holds (CHIMERA: 16384; a spoken phrase ~70); past it one is dropped, counted */
+#define CH_SCORE_CAP 256      /* gestures the score holds (CHIMERA: 16384; a spoken sentence ~100); past it one is dropped, counted */
 #endif
 
 typedef struct {
@@ -59,6 +59,9 @@ typedef struct {
     uint8_t defer_contacts;                 /* 1: a contact correction moves the articulators but the anatomy sees it
                                              * at its next run, not again now (the FM-1: half the worst step's cost) */             /* the anatomy (and the contacts) every anat_every steps (default 1) */
 } ch_control_t;
+
+/* CHIMERA's neutral (schwa-like) posture, template coordinates */
+extern const ch_real CH_NEUTRAL[CH_NARTIC];
 
 /* a voice's control at rest: the neutral articulation, the default source (HumanVoice::new); then set_source */
 void ch_control_init(ch_control_t *c, ch_real fs, int ctrl_every, ch_real body_scale);

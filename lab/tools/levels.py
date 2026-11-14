@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Shan-Sherif
 # Loudness over time (dBFS RMS per 100 ms) of 16-bit mono WAVs side by side: levels.py a.wav b.wav [...]
 import math, struct, sys
 def rd(p):

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Jameson Hodge (CHIMERA, https://github.com/jamesondh/chimera-vocal-synth)
- * C port for the M-VAVE FM-1: fm-1-chimera-vocal contributors.
+ * C port for the M-VAVE FM-1: Copyright (c) 2026 Shan-Sherif.
  *
  * CHIMERA's human anatomy at control rate, in C: articulators → the 2D midsagittal head
  * (crates/chimera/src/anatomy/human.rs HumanVocalTract::compute, the acoustic parts; the drawing
@@ -76,6 +76,15 @@ typedef struct {
      * branch numbers (the waveguide, ch_wave.c) */
     ch_real noise_s[4][3];
 
+    /* drawing (HumanFrame's drawing parts, body cm), filled in by an apply only while `draw` is set (the screen's
+     * views; the audio's anatomy runs leave it off): the tongue outline, the lips' outer edges, the jaw bone, the
+     * teeth, the glottis, the tongue body's circle; the jaw's rotation is kept always */
+    uint8_t draw;
+    ch_v2 d_tongue[64], d_ulip_out[6], d_llip_out[6], d_jaw_bone[7], d_upper_teeth[5], d_lower_teeth[4];
+    int n_tongue;
+    ch_v2 d_glottis, d_tongue_c;
+    ch_real d_tongue_r, jaw_phi;
+
     /* scratch */
     ch_line outer, inner, roof, outline;
     ch_v2 vel_oral[11], upper_lip_in[7], lower_lip_in[7], root[9], arc_pts[32], blade[7], under[6], back[48], tip_pts[16];
@@ -96,6 +105,10 @@ typedef struct {
 /* HumanVocalTract::new + the airway facts (filled in by the caller first: fs, dx_stable, n_ph,
  * n_or, the tube and port indices, the gains, the slew limits, law[]) */
 void ch_tract_init(ch_tract_t *t, ch_real scale, ch_real pharynx, ch_real tongue_radius, ch_real lip_width);
+/* template point -> body cm (HumanVocalTract::p), and the same carried by the jaw as the last apply left it */
+ch_v2 ch_tract_point(const ch_tract_t *t, ch_real x, ch_real y);
+ch_v2 ch_tract_jaw_point(const ch_tract_t *t, ch_real x, ch_real y);
+int ch_catmull_rom(const ch_v2 *pts, int n, int per, ch_v2 *out);   /* returns the count: (n - 1) * per + 1 */
 /* HumanAirway::apply(a, dt): dt > 0 slew-limits against the last areas */
 void ch_tract_apply(ch_tract_t *t, const ch_real a[CH_NARTIC], ch_real dt);
 /* HumanAirway::reapply(a): again within the same control step (after a contact correction moved an articulator),

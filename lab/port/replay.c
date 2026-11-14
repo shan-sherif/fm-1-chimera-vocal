@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Shan-Sherif
  * fm-1-chimera-vocal: replay a `lab record` file through the C port of CHIMERA's audio rate and
  * compare it with CHIMERA's own output (the file's format is in lab/src/record.rs).
  *

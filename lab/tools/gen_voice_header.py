@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Shan-Sherif
 # fm-1-chimera-vocal: the airway's layout and one held vowel, from a `lab record` recording, as a C header for the
 # firmware's timing test (app/dsp/voice_male.h). A stand-in until CHIMERA's airway builder (HumanAirway::new) is
 # ported to C: the numbers are CHIMERA's (github.com/jamesondh/chimera-vocal-synth, MIT, Jameson Hodge).
