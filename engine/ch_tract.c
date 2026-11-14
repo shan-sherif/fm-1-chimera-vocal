@@ -999,6 +999,22 @@ static void update_noise(ch_tract_t *t)
     }
 }
 
+/* HumanAirway::commit: the geometry, the tubes, the slew limits against the step's baseline, the noise */
+static void commit(ch_tract_t *t, const ch_real *a, ch_real dt)
+{
+    COUNT(CN_STEPS);
+    compute(t, a);
+    fill(t, a, 0, t->pharynx_length, t->ph_areas, t->ph_min, t->n_ph);
+    fill(t, a, t->pharynx_length, t->lip_s, t->or_areas, t->or_min, t->n_or);
+    if (dt > 0 && t->have_base) {
+        clamp_arr(t, t->ph_areas, t->base[0], t->ph_min, t->base[2], t->n_ph, dt);
+        clamp_arr(t, t->or_areas, t->base[1], t->or_min, t->base[3], t->n_or, dt);
+    }
+    t->ph_len = t->pharynx_length;
+    t->or_len = t->lip_s - t->pharynx_length;
+    update_noise(t);
+}
+
 void ch_tract_apply(ch_tract_t *t, const ch_real a[CH_NARTIC], ch_real dt)
 {
     int i;
@@ -1013,17 +1029,13 @@ void ch_tract_apply(ch_tract_t *t, const ch_real a[CH_NARTIC], ch_real dt)
         }
         t->have_base = 1;
     }
-    COUNT(CN_STEPS);
-    compute(t, a);
-    fill(t, a, 0, t->pharynx_length, t->ph_areas, t->ph_min, t->n_ph);
-    fill(t, a, t->pharynx_length, t->lip_s, t->or_areas, t->or_min, t->n_or);
-    if (dt > 0 && t->have_base) {
-        clamp_arr(t, t->ph_areas, t->base[0], t->ph_min, t->base[2], t->n_ph, dt);
-        clamp_arr(t, t->or_areas, t->base[1], t->or_min, t->base[3], t->n_or, dt);
-    }
-    t->ph_len = t->pharynx_length;
-    t->or_len = t->lip_s - t->pharynx_length;
-    update_noise(t);
+    t->base_dt = dt;
+    commit(t, a, dt);
+}
+
+void ch_tract_reapply(ch_tract_t *t, const ch_real a[CH_NARTIC])
+{
+    commit(t, a, t->base_dt);
 }
 
 void ch_tract_targets(const ch_tract_t *t, ch_real *area_target, ch_real *amin_target, ch_real *dx_target, ch_real *port_area_target)

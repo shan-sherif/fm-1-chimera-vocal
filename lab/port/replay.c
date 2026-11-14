@@ -11,6 +11,7 @@
 #include "ch_voice.h"
 #include "ch_tract.h"
 #include "ch_wave.h"
+#include "ch_control.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -280,6 +281,74 @@ static void next_artic(ch_real *a)
         a[i] = (ch_real)ra();
 }
 
+/* the gestures file (lab/src/record.rs gestures_file) into a fresh control */
+static void load_gst(const char *path, ch_control_t *c, ch_real fs, int ctrl_every)
+{
+    FILE *f = fopen(path, "rb");
+    static double *d;
+    long sz;
+    size_t n, j = 0;
+    int ng, i, k;
+    ch_source_t s;
+    double bs, mp, f0;
+#define GD() (j < n ? d[j++] : (fprintf(stderr, "replay: gestures file ends early\n"), exit(1), 0.0))
+    if (!f) {
+        perror(path);
+        exit(1);
+    }
+    fseek(f, 0, SEEK_END);
+    sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    free(d);
+    d = malloc(sz);
+    n = fread(d, 8, sz / 8, f);
+    fclose(f);
+    if (GD() != 4.0e9 + 1731.0 || GD() != 1.0) {
+        fprintf(stderr, "replay: not a version 1 gestures file\n");
+        exit(1);
+    }
+    ng = (int)GD();
+    s.f0 = GD(); s.glide = GD(); s.pressure = GD(); s.breathiness = GD(); s.tension = GD(); s.fry = GD();
+    s.roughness = GD(); s.vibrato_depth = GD(); s.vibrato_rate = GD(); s.drift = GD();
+    s.voiced = GD() != 0;
+    s.brightness = GD();
+    bs = GD();
+    mp = GD();
+    f0 = GD();
+    ch_control_init(c, fs, ctrl_every, (ch_real)bs);
+    ch_control_set_source(c, &s);
+    c->max_penetration = (ch_real)mp;
+    c->f0 = (ch_real)f0;
+    for (i = 0; i < ng; i++) {
+        ch_gesture_t g;
+        g.t0 = GD(); g.t1 = GD(); g.ramp_in = GD(); g.ramp_out = GD(); g.strength = GD();
+        g.speed = GD(); g.release_hold = GD(); g.tag = GD();
+        for (k = 0; k < CH_NCONTROL; k++)
+            g.targets[k] = (ch_real)GD();
+        ch_score_add(&c->score, &g);
+    }
+#undef GD
+}
+
+
+/* tuning (lab only): CH_WAVE_RG, _RLIP, _RNOSE, _FADE, _FADEN, _NOISE override ch_wave_init's; _RADCONST, _NOWALLS,
+ * _VARLEN switch */
+static void wave_env(ch_wave_t *wv)
+{
+    if (getenv("CH_WAVE_RG")) wv->r_glottis = (ch_real)atof(getenv("CH_WAVE_RG"));
+    if (getenv("CH_WAVE_RLIP")) wv->r_lip = (ch_real)atof(getenv("CH_WAVE_RLIP"));
+    if (getenv("CH_WAVE_RNOSE")) wv->r_nose = (ch_real)atof(getenv("CH_WAVE_RNOSE"));
+    if (getenv("CH_WAVE_FADE")) wv->fade = (ch_real)atof(getenv("CH_WAVE_FADE"));
+    if (getenv("CH_WAVE_FADEN")) wv->fade_n = (ch_real)atof(getenv("CH_WAVE_FADEN"));
+    if (getenv("CH_WAVE_NOISE")) wv->noise_gain = (ch_real)atof(getenv("CH_WAVE_NOISE"));
+    if (getenv("CH_WAVE_RADCONST")) wv->rad_load = 0;
+    if (getenv("CH_WAVE_NOWALLS")) wv->walls = 0;
+    if (getenv("CH_WAVE_VARLEN")) wv->var_len = 1;
+    if (getenv("CH_WAVE_NARROW")) wv->narrowest = (uint8_t)atoi(getenv("CH_WAVE_NARROW"));
+    if (getenv("CH_WAVE_VNARROW")) wv->vol_narrow = (ch_real)atof(getenv("CH_WAVE_VNARROW"));
+    if (getenv("CH_WAVE_VSMOOTH")) wv->vol_smooth = (ch_real)atof(getenv("CH_WAVE_VSMOOTH"));
+    if (getenv("CH_WAVE_VOL")) wv->vol_src = (uint8_t)atoi(getenv("CH_WAVE_VOL"));
+}
 
 int main(int argc, char **argv)
 {
@@ -291,7 +360,7 @@ int main(int argc, char **argv)
     float *out;
     double err2 = 0, ref2 = 0, maxerr = 0, best = 1e30;
     size_t first_div = (size_t)-1;
-    const char *wav = 0, *art_path = 0;
+    const char *wav = 0, *art_path = 0, *gst_path = 0;
     int fast = 0, drive = 0, anat_every = 1, wave = 0;
     if (argc < 2) {
         fprintf(stderr, "usage: replay <in.rec> [out.wav] [--fast=N]\n");
@@ -306,6 +375,8 @@ int main(int argc, char **argv)
             drive = 1;
         else if (!strcmp(argv[i], "--wave"))
             wave = 1;
+        else if (!strncmp(argv[i], "--control=", 10))
+            gst_path = argv[i] + 10;
         else if (!strncmp(argv[i], "--anat-every=", 13))
             anat_every = atoi(argv[i] + 13) < 1 ? 1 : atoi(argv[i] + 13);
         else
@@ -448,6 +519,112 @@ int main(int argc, char **argv)
 #endif
     }
     out = malloc(sizeof(float) * total);
+
+    if (gst_path) {
+        /* the C control from CHIMERA's gestures: each step's articulation against the .art, the glottis's parameters
+         * and the lungs' pressure against the .rec; then the waveguide renders from it (the whole pipeline in C) */
+        static ch_control_t ctl;
+        static ch_wave_t wv;
+        static ch_shape_t shape;
+        static const char *gname[17] = {"f0", "amplitude", "abduction", "chink", "open_quotient", "skew", "closure_sharpness", "effort",
+                                        "jitter", "shimmer", "vibrato_depth", "vibrato_rate", "drift", "fry", "diplophonia", "closure", "chaos"};
+        double e_x[CH_NARTIC] = {0}, e_g[17] = {0}, e_p = 0, e_x0 = 0, ctl_t = 1e30;
+        int worst_x = -1, worst_g = -1, k, run, anat;
+        ch_real a[CH_NARTIC];
+        size_t art0;
+        art_i = 0;
+        if (!art_path) { fprintf(stderr, "replay: --control needs --tract=in.art\n"); return 2; }
+        load_art(art_path);
+        art0 = art_i;
+        for (run = 0; run < 3; run++) {
+            struct timespec t0, t1, c0, c1;
+            double ct = 0;
+            art_i = art0;
+            load_gst(gst_path, &ctl, topo.fs, topo.ctrl_every);
+            ctl.anat_every = anat_every;
+            ctl.defer_contacts = getenv("CH_DEFER") != 0;
+            next_artic(a);
+            for (k = 0; k < CH_NARTIC; k++)
+                if (fabs((double)ctl.x[k] - a[k]) > e_x0)
+                    e_x0 = fabs((double)ctl.x[k] - a[k]);
+            tract.have_base = 0;
+            ch_tract_apply(&tract, ctl.x, 0);
+            ch_wave_init(&wv, topo.fs, topo.ctrl_every, tract.k, tract.lip_s);
+            wave_env(&wv);
+            clock_gettime(CLOCK_MONOTONIC, &t0);
+            for (i = 0, pos = 0; i < nblk; i++) {
+                const ch_real *g = &bl[i].b.glottis.f0, *cg = &ctl.glottis.f0;
+                clock_gettime(CLOCK_MONOTONIC, &c0);
+                anat = ch_control_step(&ctl, &tract);
+                if (anat)
+                    ch_tract_shape(&tract, &shape);
+                clock_gettime(CLOCK_MONOTONIC, &c1);
+                {
+                    double st = (double)(c1.tv_sec - c0.tv_sec) + 1e-9 * (double)(c1.tv_nsec - c0.tv_nsec);
+                    ct += st;
+                    if (getenv("CH_STEP_TIMES") && run == 2)   /* each step: time (us), anatomy ran, reapplies so far */
+                        fprintf(stderr, "%d %.2f %d %u\n", i, 1e6 * st, anat, ctl.reapplies);
+                }
+                if (run == 0) {
+                    next_artic(a);
+                    ra();   /* dt */
+                    for (k = 0; k < CH_NARTIC; k++)
+                        if (fabs((double)ctl.x[k] - a[k]) > e_x[k]) {
+                            e_x[k] = fabs((double)ctl.x[k] - a[k]);
+                            if (worst_x < 0 || e_x[k] >= e_x[worst_x])
+                                worst_x = k;
+                        }
+                    for (k = 0; k < 17; k++) {
+                        double e = fabs((double)cg[k] - g[k]) / (fabs((double)g[k]) + 1e-3);
+                        if (e > e_g[k]) {
+                            e_g[k] = e;
+                            if (worst_g < 0 || e_g[k] >= e_g[worst_g])
+                                worst_g = k;
+                        }
+                    }
+                    if (fabs((double)ctl.p_lung - bl[i].b.p_lung) > e_p)
+                        e_p = fabs((double)ctl.p_lung - bl[i].b.p_lung);
+                }
+                ch_wave_block(&wv, anat ? &shape : 0, anat_every, &ctl.glottis, ctl.p_lung);
+                ch_wave_render(&wv, out + pos, bl[i].n_samples);
+                if (getenv("CH_PSUPRA") && run == 0) {   /* "from,to" (s): the pressure above the glottis, the voicing */
+                    double tf = atof(getenv("CH_PSUPRA")), tt = atof(strchr(getenv("CH_PSUPRA"), ',') + 1), tn = (double)pos / topo.fs;
+                    if (tn >= tf && tn <= tt)
+                    {
+                        int q, qm = 0;
+                        for (q = 1; q < wv.n; q++)
+                            if (wv.sec[q].area < wv.sec[qm].area)
+                                qm = q;
+                        printf("  %.3f s  p_lung %6.0f  p_supra %6.0f  voicing %.2f  glottis %.4f cm2  abduction %.3f  shut %d  narrowest %d/%d %.4f  jets %d  velum %.3f\n", tn,
+                               (double)wv.p_lung_now, (double)wv.p_supra, (double)wv.glottis.voicing, (double)wv.a_g,
+                               (double)ctl.glottis.abduction, wv.n_shut, qm, wv.n, (double)wv.sec[qm].area, wv.n_jet, (double)tract.velum_port_area);
+                    }
+                }
+                pos += bl[i].n_samples;
+            }
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            if (ct < ctl_t)
+                ctl_t = ct;
+            (void)t0;
+            (void)t1;
+        }
+        printf("%s: C control vs CHIMERA over %d control steps (%d gestures left at the end)%s\n", gst_path, nblk, ctl.score.n,
+               ctl.score.dropped ? " (some dropped: CH_SCORE_CAP)" : "");
+        printf("  start articulation error %.2e\n  max articulator error %.2e (%d); by articulator:", e_x0,
+               worst_x < 0 ? 0.0 : e_x[worst_x], worst_x);
+        for (k = 0; k < CH_NARTIC; k++)
+            printf(" %.1e", e_x[k]);
+        printf("\n  max relative glottis error %.2e (%s); p_lung max error %.2e dyn/cm2\n", worst_g < 0 ? 0.0 : e_g[worst_g],
+               worst_g < 0 ? "-" : gname[worst_g], e_p);
+        for (k = 0; k < 17; k++)
+            if (e_g[k] > 1e-9)
+                printf("    %s %.2e\n", gname[k], e_g[k]);
+        printf("  cost: control + anatomy %.1f us a control step on this core (%.2f%% of it)\n", 1e6 * ctl_t / nblk,
+               100.0 * ctl_t / ((double)total / topo.fs));
+        if (wav)
+            write_wav(wav, out, total, (uint32_t)topo.fs);
+        return 0;
+    }
 
     if (wave) {
         /* the waveguide from the C anatomy, the recording's glottis and breath; timed the same way */

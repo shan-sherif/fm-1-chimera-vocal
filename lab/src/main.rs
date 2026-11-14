@@ -287,6 +287,46 @@ fn main() {
             write_wav(&path.replace(".rec", "-chimera.wav"), &out, 44100);
             println!("wrote {path}: {} samples", out.len());
         }
+        "psupra" => {
+            // lab psupra from_s to_s ["Text."] [body]: CHIMERA's pressure just above the glottis and its voicing, every 3 ms
+            let from: f64 = args[2].parse().unwrap();
+            let to: f64 = args[3].parse().unwrap();
+            let text = args.get(4).map(String::as_str).unwrap_or("She sells sea shells. Did you get the big red ball?");
+            let body = args.get(5).map(String::as_str).unwrap_or("male");
+            let (mut v, n) = speaking(&g2p(), text, body, 44100.0, 1);
+            let supra = v.airway.pharynx.first_node();
+            let mut one = [0f32; 1];
+            for i in 0..n {
+                v.render(&mut one);
+                let t = i as f64 / 44100.0;
+                if t >= from && t <= to && i % 132 == 0 {
+                    print!("{t:.3}:{:.0}/{:.2}  ", v.airway.net.p[supra], v.glottis.voicing);
+                }
+            }
+            println!();
+        }
+        "timeline" => {
+            // lab timeline ref.wav other.wav [from_s] [to_s]: frame by frame (11.6 ms): ref level, other - ref level,
+            // spectral distance, and the level difference in three regions (< 600 Hz, 600-2500, > 2500)
+            let (a, b) = (read_wav(&args[2]), read_wav(&args[3]));
+            let from: f64 = args.get(4).map(|s| s.parse().unwrap()).unwrap_or(0.0);
+            let to: f64 = args.get(5).map(|s| s.parse().unwrap()).unwrap_or(1e9);
+            let (fa, fb) = (frames(&a, 44100.0), frames(&b, 44100.0));
+            let region = |v: &[f64], lo: usize, hi: usize| 10.0 * (v[lo..hi].iter().map(|d| 10f64.powf(d / 10.0)).sum::<f64>() + 1e-20).log10();
+            println!("   t (s)  ref dB  diff  spec   low   mid  high");
+            for (i, ((la, ba), (lb, bb))) in fa.iter().zip(&fb).enumerate() {
+                let t = i as f64 * 512.0 / 44100.0;
+                if t < from || t > to || *la < -60.0 {
+                    continue;
+                }
+                let top = ba.iter().cloned().fold(f64::MIN, f64::max);
+                let d: Vec<f64> = ba.iter().zip(bb).filter(|(x, _)| **x > top - 50.0).map(|(x, y)| y - x - (lb - la)).collect();
+                let sd = d.iter().map(|v| v.abs()).sum::<f64>() / d.len() as f64;
+                // bands: 100 Hz * 2^(i/3): < 600 Hz is 0..8, 600-2500 is 8..14, above is 14..21
+                println!("  {t:6.3}  {la:6.1}  {:+5.1}  {sd:4.1}  {:+5.1} {:+5.1} {:+5.1}", lb - la,
+                    region(bb, 0, 8) - region(ba, 0, 8), region(bb, 8, 14) - region(ba, 8, 14), region(bb, 14, 21) - region(ba, 14, 21));
+            }
+        }
         "compare" => {
             // lab compare ref.wav other.wav[@shift] [...]: each against the first; @N moves that file N
             // samples earlier (to take a known latency out of the comparison)

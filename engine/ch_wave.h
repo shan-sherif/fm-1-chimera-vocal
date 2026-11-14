@@ -18,8 +18,8 @@
  *            the same Reynolds-number law and filters, injected as series pressure sources at the junctions
  *   output   the radiated flow's time derivative at the lips and the nostrils, then CHIMERA's DC blocker and limiter
  *
- * Lost against the FDTD: the yielding walls (the voice bar during voiced closures), the moving-wall volume sources,
- * the tract's length changing the section count (the length is spread over a fixed count), the sinus and the
+ * Lumped against the FDTD: the yielding walls (one wall for the whole tract) and the moving-wall volume sources (one
+ * source, at the glottis's end). Lost: the tract's length changing the section count (the length is spread over a fixed count), the sinus and the
  * piriform fossae. */
 #ifndef CH_WAVE_H
 #define CH_WAVE_H
@@ -80,6 +80,17 @@ typedef struct {
     int16_t shut[CH_WMAX];
     uint8_t walls;
     ch_real wall_s, wall_v, wall_y, wall_u;
+    /* the moving walls' volume source (CHIMERA's vol_src), lumped: the volume the tract behind its first closure (the
+     * anatomy's cells) loses per second as the tongue, jaw and lips move, pushed in at the glottis's end. Behind a
+     * closure it is what builds the pressure that stops the voicing in a stop (without it a /g/ stayed voiced ~80 ms,
+     * CHIMERA's devoices in ~15) */
+    uint8_t vol_src;                        /* 0 off, 1 behind a closure, 2 behind a closure or a constriction under vol_narrow */
+    ch_real vol_narrow, vol_smooth;
+    uint8_t narrowest;                      /* a section's area: its narrowest anatomy cell's (1), its middle's (0) */
+    ch_real vol_u, vol_goal;
+    ch_real vcell[2 * CH_MAXTUBE];          /* each anatomy cell's volume at the last shape (pharynx, then mouth) */
+    uint8_t vol_ok;
+    int vol_cells;
     /* the glottis: CHIMERA's area model and its port's constants (HumanAirway's glottis_port) */
     ch_glottis_t glottis;
     ch_real port_len, port_slit, port_kin, port_kex;

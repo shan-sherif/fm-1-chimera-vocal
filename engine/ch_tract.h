@@ -66,6 +66,7 @@ typedef struct {
     ch_real ph_len, or_len;
     ch_real base[4][CH_MAXTUBE];   /* the areas the control step started from (slew baseline) */
     int have_base;
+    ch_real base_dt;
 
     /* the noise sources for the network (ch_noise_t: src fwd bwd gain lp_coef hp_coef) */
     ch_noise_t noise[4];
@@ -97,6 +98,9 @@ typedef struct {
 void ch_tract_init(ch_tract_t *t, ch_real scale, ch_real pharynx, ch_real tongue_radius, ch_real lip_width);
 /* HumanAirway::apply(a, dt): dt > 0 slew-limits against the last areas */
 void ch_tract_apply(ch_tract_t *t, const ch_real a[CH_NARTIC], ch_real dt);
+/* HumanAirway::reapply(a): again within the same control step (after a contact correction moved an articulator),
+ * slew-limited against the areas the step started from */
+void ch_tract_reapply(ch_tract_t *t, const ch_real a[CH_NARTIC]);
 /* the network targets of the last apply: areas, minima and lengths of the pharynx and oral nodes,
  * the velum port, the noise sources (into the arrays a ch_block_t points at) */
 void ch_tract_targets(const ch_tract_t *t, ch_real *area_target, ch_real *amin_target, ch_real *dx_target,

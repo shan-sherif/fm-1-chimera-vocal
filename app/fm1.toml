@@ -5,7 +5,7 @@ id_prefix = "FM-1_042"         # package identity, the same number for every ver
                                # releases FM-1_042XXYYZZ (the version, for the installer's check after an install)
 usb_manufacturer = "fm-1-chimera-vocal"
 usb_product = "VOCAL FM-1"
-o2 = ["../engine/ch_tract.c", "../engine/ch_wave.c"]   # the voice (CHIMERA's port, MIT), each at -O2
+o2 = ["../engine/ch_tract.c", "../engine/ch_wave.c", "../engine/ch_control.c"]   # the voice (CHIMERA's port, MIT), each at -O2
 o2_cflags = ["-DCH_FM1"]       # the engine's maths from fm1-base's fastmath.h
 include = ["../engine", "dsp"]
 cpu2 = true                    # the airway renders on the second core

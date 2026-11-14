@@ -134,14 +134,44 @@ fn art_header(w: &mut W, v: &HumanVoice) {
     w.all(&v.artic.x.to_array());
 }
 
+/// The control side's inputs, written beside the recording as `<name>.gst` (flat little-endian f64):
+///
+///   header   GST_MAGIC, GST_VERSION, n_gestures,
+///            the voice source (f0, glide, pressure, breathiness, tension, fry, roughness, vibrato_depth, vibrato_rate,
+///            drift, voiced, brightness), the body's scale, max_penetration, the voice's starting f0 (HumanVoice.f0)
+///   gestures each: t0, t1, ramp_in, ramp_out, strength, speed, release_hold, tag (NaN: none), then its 22 targets
+///            (ArticKey order, then abduction, closure, breath, f0, vibrato; NaN: absent)
+///
+/// The C control (engine/ch_control.c) runs from these and is checked against the .art (the articulators) and the
+/// .rec (the glottis's parameters and the lungs' pressure at each control step).
+pub const GST_MAGIC: f64 = 4.0e9 + 1731.0;
+pub const GST_VERSION: f64 = 1.0;
+
+fn gestures_file(v: &HumanVoice) -> W {
+    let mut w = W(Vec::new());
+    let gs = v.score.gestures();
+    let s = &v.source;
+    w.all(&[GST_MAGIC, GST_VERSION, gs.len() as f64]);
+    w.all(&[s.f0, s.glide, s.pressure, s.breathiness, s.tension, s.fry, s.roughness, s.vibrato_depth, s.vibrato_rate, s.drift]);
+    w.b(s.voiced);
+    w.f(s.brightness);
+    w.all(&[v.airway.body.scale, v.max_penetration, v.f0]);
+    for g in gs {
+        w.all(&[g.t0, g.t1, g.ramp_in, g.ramp_out, g.strength, g.speed.unwrap_or(f64::NAN), g.release_hold.unwrap_or(f64::NAN), g.tag.unwrap_or(f64::NAN)]);
+        w.all(&g.targets.0);
+    }
+    w
+}
+
 /// Render `n` samples of `v` (no oversampling), one at a time so each control step is seen,
-/// and write the recording to `path` (and the articulation beside it). Returns CHIMERA's output.
+/// and write the recording to `path` (and the articulation and the gestures beside it). Returns CHIMERA's output.
 pub fn record(mut v: HumanVoice, n: usize, path: &str) -> Vec<f32> {
     assert_eq!(v.m, 1, "record runs without oversampling: the C port has no decimator");
     let mut w = W(Vec::new());
     header(&mut w, &v);
     let mut art = W(Vec::new());
     art_header(&mut art, &v);
+    let gst = gestures_file(&v);
     let mut out = Vec::with_capacity(n);
     let mut samples: Vec<f64> = Vec::new();
     let mut one = [0f32; 1];
@@ -162,6 +192,7 @@ pub fn record(mut v: HumanVoice, n: usize, path: &str) -> Vec<f32> {
     std::fs::create_dir_all("out").unwrap();
     std::fs::write(path, w.0).unwrap();
     std::fs::write(path.replace(".rec", ".art"), art.0).unwrap();
+    std::fs::write(path.replace(".rec", ".gst"), gst.0).unwrap();
     out
 }
 

@@ -31,8 +31,9 @@ interface.
 
 ## Status
 
-Early firmware: a test. It sings one held vowel at the key's pitch on both of the FM-1's cores and
-shows how long each core takes; it is not an instrument yet.
+Early firmware: a test. The keys sing a held vowel at their pitch, and PLAY speaks one phrase CHIMERA planned,
+through CHIMERA's control ported to C. Both of the FM-1's cores are used, and the screen shows how long each one
+takes. It is not an instrument yet.
 
 CHIMERA's full airway physics ran on the FM-1 but at about twice what it can afford
 ([docs/full-physics-on-fm1.md](docs/full-physics-on-fm1.md): the measurements, and what someone could
@@ -45,8 +46,8 @@ dropouts. Against CHIMERA's own renders it is about 5.2-5.5 dB in spectrum (the 
 
 | Path | What |
 | --- | --- |
-| `engine/` | The C port of CHIMERA's voice (MIT, Jameson Hodge's notice kept): `ch_voice.c` the literal audio rate (the reference), `ch_fast.c` the same rearranged for the FM-1, `ch_tract.c` the head model, `ch_common.h` what they share |
-| `app/` | The firmware, on fm1-base (started from its template): `app.c`, `fm1.toml`, `dsp/voice_male.h` (the airway's layout, generated from a recording until the airway builder is ported) |
+| `engine/` | The C port of CHIMERA's voice (MIT, Jameson Hodge's notice kept): `ch_voice.c` the literal audio rate (the reference), `ch_fast.c` the same rearranged for the FM-1, `ch_tract.c` the head model, `ch_wave.c` the FM-1's waveguide tract, `ch_control.c` the control rate (articulators, gestural score, source, contacts), `ch_common.h` what they share |
+| `app/` | The firmware, on fm1-base (started from its template): `app.c`, `fm1.toml`, `dsp/voice_male.h` (the airway's layout) and `dsp/phrase_male.h` (one phrase's gestures), both generated from a recording until the airway builder and the text front end are ported |
 | `base/` | [fm1-base](https://github.com/charlesvestal/fm1-base) by Charles Vestal (MPL-2.0), a git submodule pinned to a tested revision, with felucca-bsp inside |
 | `lab/` | The test bench: CHIMERA itself as a Rust library, the recorder, the C replay checks, comparisons, cost estimates |
 
@@ -79,10 +80,12 @@ The lab:
 - `sh port/build.sh`, then `out/replay64 out/male.rec` checks the literal port against CHIMERA,
   `out/replay_fm1 out/male.rec out.wav --tract=out/male.art --drive --fast=16` runs the FM-1's version
   (its maths, the head model in C, geometry every 16 samples), `--anat-every=N` the head model every
-  N control steps.
+  N control steps. `--control=out/male.gst` (with `--tract`) runs the C control from CHIMERA's gestures, checks each
+  step's articulation, vocal-fold settings and breath against the recording, and renders through the waveguide.
 - `cargo run --release -- compare ref.wav other.wav[@shift]` compares level and spectrum frame by frame.
 - `tools/pi_cost.py` estimates per-sample instruction counts from the FM-1 compiler's assembly.
-- `tools/gen_voice_header.py out/male.rec out/male.art > ../app/dsp/voice_male.h` makes the firmware's airway header.
+- `tools/gen_voice_header.py out/male.rec out/male.art > ../app/dsp/voice_male.h` makes the firmware's airway header,
+  `tools/gen_phrase_header.py out/male.gst "Text." > ../app/dsp/phrase_male.h` its phrase.
 
 The reference sources are cloned into `external/` (gitignored): CHIMERA, Felucca, Saadet, Melodee,
 fm-1-midi-mania and fm1-base.

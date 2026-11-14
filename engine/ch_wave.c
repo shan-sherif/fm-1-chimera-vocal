@@ -73,6 +73,13 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
     for (i = 0; i < 8; i++)
         w->jet_u[i] = 0;
     w->walls = 1;
+    w->vol_src = 2;
+    w->vol_narrow = R(0.1);
+    w->vol_smooth = R(0.003);                 /* (~8 ms) */
+    w->narrowest = 1;
+    w->vol_u = w->vol_goal = 0;
+    w->vol_ok = 0;
+    w->vol_cells = 0;
     w->wall_s = w->wall_v = w->wall_y = w->wall_u = 0;
     for (i = 0; i < 2; i++) {
         w->rb0[i] = R(-1.0);
@@ -114,27 +121,57 @@ CH_HOT static void rad_coefs(ch_wave_t *w, int e, ch_real a)
 }
 
 /* the area a section at s (cm from the glottis) gets from the anatomy's two tubes: closed where their minimum is */
-CH_HOT static ch_real tube_area(const ch_shape_t *t, ch_real s, ch_real closed)
+/* one anatomy cell: its area, 0 when it is shut (its area or its narrowest point under the closure's) */
+CH_HOT static ch_real cell_area(const ch_shape_t *t, int oral, int i, ch_real closed)
 {
-    ch_real a, m;
-    if (s < t->ph_len) {
-        int i = (int)(s / (t->ph_len / (ch_real)t->n_ph));
-        i = i < 0 ? 0 : i > t->n_ph - 1 ? t->n_ph - 1 : i;
-        a = t->ph_areas[i];
-        m = t->ph_min[i];
-    } else {
-        int i = (int)((s - t->ph_len) / (t->or_len / (ch_real)t->n_or));
-        i = i < 0 ? 0 : i > t->n_or - 1 ? t->n_or - 1 : i;
-        a = t->or_areas[i];
-        m = t->or_min[i];
-    }
+    ch_real a = oral ? t->or_areas[i] : t->ph_areas[i], m = oral ? t->or_min[i] : t->ph_min[i];
     return m < closed || a < closed ? 0 : a;
+}
+
+/* a section's area over [s0, s1] (cm from the glottis): the anatomy's cell at its middle; shut when any cell it
+ * covers is (a tip closure is shorter than a section: sampled at the middle alone, a /d/ was missed), the narrowest
+ * cell's area when ch_wave_t.narrowest (constrictions) */
+CH_HOT static ch_real tube_area(const ch_wave_t *w, const ch_shape_t *t, ch_real s0, ch_real s1, ch_real closed, ch_real *amin)
+{
+    const ch_real dph = t->ph_len / (ch_real)t->n_ph, dor = t->or_len / (ch_real)t->n_or, mid = R(0.5) * (s0 + s1);
+    ch_real a, lo = R(1e9), lm = R(1e9);
+    int part, i, i0, i1;
+    if (mid < t->ph_len) {
+        i = (int)(mid / dph);
+        a = cell_area(t, 0, i < 0 ? 0 : i > t->n_ph - 1 ? t->n_ph - 1 : i, closed);
+    } else {
+        i = (int)((mid - t->ph_len) / dor);
+        a = cell_area(t, 1, i < 0 ? 0 : i > t->n_or - 1 ? t->n_or - 1 : i, closed);
+    }
+    for (part = 0; part < 2; part++) {   /* every cell the section covers, in the pharynx and in the mouth */
+        const ch_real base = part ? t->ph_len : 0, d = part ? dor : dph;
+        const int n = part ? t->n_or : t->n_ph;
+        i0 = (int)((s0 - base) / d);
+        i1 = (int)((s1 - base) / d);
+        if (s1 <= base || (part == 0 && s0 >= t->ph_len))
+            continue;
+        i0 = i0 < 0 ? 0 : i0;
+        i1 = i1 > n - 1 ? n - 1 : i1;
+        for (i = i0; i <= i1; i++) {
+            ch_real c = cell_area(t, part, i, closed), m = part ? t->or_min[i] : t->ph_min[i];
+            if (c < lo)
+                lo = c;
+            if (m < lm)
+                lm = m;
+        }
+    }
+    if (lo == 0) {
+        *amin = 0;
+        return 0;
+    }
+    *amin = lm;
+    return w->narrowest && lo < a ? lo : a;
 }
 
 CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch_glottis_params_t *g, ch_real p_lung)
 {
     const ch_real inv1 = R(1.0) / (ch_real)w->ctrl_every;
-    ch_real inv, len, target[CH_WMAX], a1, a2, a3, sum, per;
+    ch_real inv, len, target[CH_WMAX], tmin[CH_WMAX], a1, a2, a3, sum, per;
     int i, m;
     /* the lungs' pressure, ramped over the step; the glottis's parameters */
     w->p_lung = p_lung;
@@ -166,7 +203,8 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     per = len / (ch_real)w->n;
     /* the tract's sections from the anatomy, spread over its current length; their reflections, ramped */
     for (i = 0; i < w->n; i++) {
-        target[i] = tube_area(t, ((ch_real)i + R(0.5)) * per, w->closed_area);
+        target[i] = tube_area(w, t, (ch_real)i * per, (ch_real)(i + 1) * per, w->closed_area, &tmin[i]);
+        tmin[i] = mn(tmin[i], target[i]);
         w->sec[i].darea = (target[i] - w->sec[i].area) * inv;
     }
     /* the sections shut now or by the end of the step */
@@ -174,6 +212,31 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     for (i = 0; i < w->n; i++)
         if (w->sec[i].area < w->closed_area || target[i] < w->closed_area)
             w->shut[w->n_shut++] = (int16_t)i;
+    /* the volume source: what the anatomy's cells behind the first closure lost since the last shape, each cell's own
+     * change, spread over this shape's glide. (Not the volume behind the closure then and now: the closure's front
+     * moving a cell forward read as that cell's whole volume appearing, a suction that broke the /d/ of "red") */
+    {
+        const ch_real dph = t->ph_len / (ch_real)t->n_ph, dor = t->or_len / (ch_real)t->n_or;
+        ch_real dv = 0;
+        int shut = 0, part, n_cells;
+        for (part = 0; part < 2; part++) {
+            const int nc = part ? t->n_or : t->n_ph;
+            for (i = 0; i < nc; i++) {
+                const int c = part * CH_MAXTUBE + i;
+                const ch_real v = (part ? t->or_areas[i] * dor : t->ph_areas[i] * dph);
+                if (!shut && (cell_area(t, part, i, w->closed_area) == 0
+                              || (w->vol_src == 2 && (part ? t->or_min[i] : t->ph_min[i]) < w->vol_narrow)))
+                    shut = 1;   /* (2: a narrow constriction holds the air back too) */
+                if (!shut && w->vol_ok)
+                    dv += v - w->vcell[c];
+                w->vcell[c] = v;
+            }
+        }
+        n_cells = t->n_ph + t->n_or;
+        w->vol_goal = w->vol_src && shut && w->vol_ok && n_cells == w->vol_cells ? -dv * inv * w->fs : 0;
+        w->vol_ok = 1;
+        w->vol_cells = n_cells;
+    }
     /* every junction restarts from its sections' areas now (a junction that was the nose's, or had a stale value,
      * would otherwise jump: a one-sample spike) and ramps to the target's */
     w->sec[0].dk = 0;
@@ -379,7 +442,8 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
             w->wall_u = w->wall_s * v;
         }
         /* the glottis's end: a flow source at a nearly rigid end, less what the walls take */
-        r0 = w->r_glottis * sec[0].L[p] + w->rho_c / mx(sec[0].area, R(1e-4)) * (ug - w->wall_u);
+        w->vol_u += w->vol_smooth * (w->vol_goal - w->vol_u);   /* (a step's change is not a click) */
+        r0 = w->r_glottis * sec[0].L[p] + w->rho_c / mx(sec[0].area, R(1e-4)) * (ug - w->wall_u + w->vol_u);
         sec[0].R[q] = r0 * fade;
         w->p_supra = sec[0].L[p] + r0;
         /* the junctions below and above the nose's: the arriving waves, scattered (and the ramps) */

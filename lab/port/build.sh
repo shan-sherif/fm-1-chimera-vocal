@@ -7,7 +7,7 @@
 set -e
 cd "$(dirname "$0")"
 E=../../engine
-SRC="replay.c $E/ch_voice.c $E/ch_fast.c $E/ch_tract.c $E/ch_wave.c"
+SRC="replay.c $E/ch_voice.c $E/ch_fast.c $E/ch_tract.c $E/ch_wave.c $E/ch_control.c"
 W="-std=c99 -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -I$E"
 cc -O2 $W -DCH_DOUBLE -o ../out/replay64 $SRC -lm
 cc -O2 $W -o ../out/replay32 $SRC -lm

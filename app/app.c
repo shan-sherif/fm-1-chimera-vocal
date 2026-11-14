@@ -30,11 +30,15 @@ static const char *const ENC_NAME[NE] = {"SELECT", "ALGO", "PRESET", "K1", "K2",
  * docs/full-physics-on-fm1.md). Each audio block is APP_BLOCK samples, VM_CTRL to a control step: the second core
  * renders the waveguide for this block from what the first core computed during the block before (the anatomy's
  * shape, the glottis's parameters, the breath), while the first core computes the next. Each core's time is shown.
- * PLAY swings the posture between the vowel and a closure every 150 ms (the worst case); SEQ sets how often the
- * anatomy runs: every control step, every 2nd (the default) or every 4th, the tract gliding between. */
+ * The first core runs CHIMERA's control (ch_control.c: the articulators, the gestural score, the source, the
+ * contacts) and its anatomy. A key holds a vowel at its pitch; PLAY speaks a phrase CHIMERA planned (its gestures,
+ * dsp/phrase_male.h) until the text front end is ported; SEQ sets how often the anatomy runs: every control step,
+ * every 2nd or every 4th (the default), the tract gliding between. */
 #include "ch_tract.h"
 #include "ch_wave.h"
+#include "ch_control.h"
 #include "voice_male.h"
+#include "phrase_male.h"
 
 #define NSUB ((int)(APP_BLOCK / VM_CTRL))           /* control steps a block */
 /* a block on plat_ticks24's clock (24 per microsecond). (256 * 24000000 overflows 32 bits: v0.0.1 showed every
@@ -47,6 +51,8 @@ typedef struct {                             /* one control step, from the first
     float p_lung;
 } step_t;
 static ch_tract_t tract PLAT_POOL;
+static ch_control_t ctl PLAT_POOL;
+static float neutral[CH_NARTIC];             /* CHIMERA's performer posture while it speaks (the keys' is the vowel) */
 static ch_wave_t wave PLAT_POOL;
 static step_t steps[2][NSUB] PLAT_POOL;     /* [the block being rendered / the next one][its control steps] */
 static float vbuf[APP_BLOCK] PLAT_POOL;
@@ -55,10 +61,10 @@ static int cur;                              /* steps[cur] is the block the wave
 static uint32_t quiet_blocks;
 static int resting = 1;                      /* nothing simulated until the first key */
 static int two_cores;
-static float gate, f0_now = 110.0f, artic_now[CH_NARTIC], swing_t;
-static volatile uint8_t swing;               /* PLAY: the vowel / closure swing */
-static volatile uint8_t anat_every = 2;      /* SEQ: the anatomy every 1, 2 or 4 control steps */
-static uint32_t ctrl_count;
+static volatile uint8_t say_req;             /* PLAY: speak the phrase (the audio interrupt schedules it) */
+static volatile uint8_t speaking;            /* the phrase's score is still playing */
+static volatile uint8_t anat_every = 4;      /* SEQ: the anatomy every 1, 2 or 4 control steps (0.0.5's 2 overran
+                                              * while speaking: core 1 peaked at 210 %) */
 /* the timings, on plat_ticks24's clock (24 MHz): the last block's, the sum and the worst since the screen read them */
 static volatile uint32_t c1_sum, c1_peak, c0_sum, c0_peak, n_blk, c1_last;
 
@@ -67,42 +73,39 @@ static volatile int32_t voice_note = -1;     /* MIDI note, -1 = released */
 static volatile float voice_vel = 1.0f;      /* the note's velocity, 0..1 */
 static float gain_now;                       /* glides to MASTER: no step at a block's edge */
 
-/* the first core: one control step (HumanVoice::control's part this test has) */
+/* the first core: one control step (HumanVoice::control: ch_control.c) */
 static void control_step(step_t *d)
 {
-    const float dt = (float)VM_CTRL / (float)VM_FS;
     int32_t note = voice_note;
-    float gate_goal = note >= 0 ? 1.0f : 0.0f, f0_goal, k;
-    int i, every = anat_every;
-    /* the posture: held, or swinging between the vowel and the closure (articulators ~15 ms behind) */
-    const float *goal = vm_artic;
-    if (swing) {
-        swing_t += dt;
-        if (swing_t >= 0.3f)
-            swing_t -= 0.3f;
-        if (swing_t >= 0.15f)
-            goal = vm_artic2;
+    int i;
+    if (say_req) {   /* the phrase, from now: its gestures shifted to the control's clock */
+        say_req = 0;
+        ch_score_clear(&ctl.score);
+        for (i = 0; i < PH_N; i++) {
+            ch_gesture_t g = ph_gestures[i];
+            g.t0 += ctl.clock;
+            g.t1 += ctl.clock;
+            ch_score_add(&ctl.score, &g);
+        }
+        for (i = 0; i < CH_NARTIC; i++)
+            ctl.target[i] = neutral[i];
+        speaking = 1;
+    } else if (speaking && ctl.score.n == 0) {   /* the phrase over: the keys' vowel again */
+        speaking = 0;
+        for (i = 0; i < CH_NARTIC; i++)
+            ctl.target[i] = vm_artic[i];
     }
-    k = 1.0f - fm_expf(-dt / 0.015f);
-    for (i = 0; i < CH_NARTIC; i++)
-        artic_now[i] += (goal[i] - artic_now[i]) * k;
-    /* breath: fast attack, slower release (HumanVoice's gate); pitch: a 30 ms glide to the key */
-    gate += (gate_goal - gate) * (1.0f - fm_expf(-dt / (gate_goal > gate ? 0.025f : 0.07f)));
-    f0_goal = note >= 0 ? 440.0f * fm_exp2f((float)(note - 69) / 12.0f) : f0_now;
-    f0_now *= fm_powf(f0_goal / f0_now, 1.0f - fm_expf(-dt / 0.03f));
-    /* the anatomy, every `every` steps (slew limits over that span), the tract gliding to it over the same */
-    d->has_shape = 0;
-    if (ctrl_count++ % (uint32_t)every == 0) {
-        ch_tract_apply(&tract, artic_now, dt * (float)every);
+    ch_control_set_gate(&ctl, note >= 0 ? 1.0f : 0.0f);
+    if (note >= 0)
+        ctl.source.f0 = 440.0f * fm_exp2f((float)(note - 69) / 12.0f);
+    ctl.anat_every = anat_every;
+    d->has_shape = (uint8_t)ch_control_step(&ctl, &tract);
+    if (d->has_shape) {
         ch_tract_shape(&tract, &d->shape);
-        d->has_shape = 1;
-        d->steps = (uint8_t)every;
+        d->steps = (uint8_t)ctl.anat_every;
     }
-    for (i = 0; i < 17; i++)
-        (&d->g.f0)[i] = vm_glottis[i];
-    d->g.f0 = f0_now;
-    d->g.effort = fm_clampf((vm_p_lung / 980.665f * gate - 3.0f) / 10.0f, 0.0f, 1.0f);
-    d->p_lung = vm_p_lung * gate;
+    d->g = ctl.glottis;
+    d->p_lung = ctl.p_lung;
 }
 
 /* the second core (or the first, alone): the waveguide for a block. In RAM (.c1_text, as the engine's audio rate),
@@ -123,9 +126,16 @@ static void voice_init(void)
 {
     int s, k;
     vm_tract_setup(&tract);
-    for (k = 0; k < CH_NARTIC; k++)
-        artic_now[k] = vm_artic[k];
-    ch_tract_apply(&tract, artic_now, 0.0f);   /* (unslewed, as HumanVoice::new) */
+    ch_control_init(&ctl, (float)VM_FS, VM_CTRL, PH_BODY_SCALE);
+    ch_control_set_source(&ctl, &ph_source);
+    ctl.f0 = PH_F0_START;
+    ctl.max_penetration = PH_MAX_PENETRATION;
+    ctl.defer_contacts = 1;                  /* no second anatomy run after a contact correction (lab: same sound) */
+    for (k = 0; k < CH_NARTIC; k++) {         /* at rest on the keys' vowel */
+        neutral[k] = ctl.target[k];
+        ctl.target[k] = ctl.x[k] = vm_artic[k];
+    }
+    ch_tract_apply(&tract, ctl.x, 0.0f);   /* (unslewed, as HumanVoice::new) */
     ch_wave_init(&wave, (float)VM_FS, VM_CTRL, tract.k, tract.lip_s);
     for (s = 0; s < NSUB; s++)
         control_step(&steps[0][s]);
@@ -175,7 +185,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
      * output is silence and the voice keeps its state as it was. A key wakes it: the first block renders from the
      * targets of the block before the rest (one block, 5.8 ms, before the new ones arrive). v0.0.1 / v0.0.2 ran the
      * whole voice in silence too: on the FM-1 that kept the audio overloaded with no key held (a constant sound). */
-    if (resting && voice_note < 0) {
+    if (resting && voice_note < 0 && !say_req) {
         for (i = 0; i < 2u * n; i++)
             lr[i] = 0;
         n_blk++;                                 /* (a resting block costs nothing: it counts as 0 %) */
@@ -210,7 +220,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
                 peak = fm_fabsf(vbuf[i]);
         }
         /* rest once the key is up, the breath gone and the output below 16-bit silence for a while */
-        if (voice_note < 0 && gate < 1e-4f && peak < 2e-6f) {
+        if (voice_note < 0 && !speaking && !say_req && ctl.gate < 1e-4f && peak < 2e-6f) {
             if (++quiet_blocks >= QUIET_BLOCKS)
                 resting = 1;
         } else {
@@ -222,7 +232,8 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
 void app_panic(void)
 {
     voice_note = -1;
-    gate = 0.0f;
+    ch_score_clear(&ctl.score);
+    ctl.gate = 0.0f;
 }
 
 /* --------------------------------------------------------------- settings --- */
@@ -439,9 +450,9 @@ static void input(void)
         else if (k == B_SEQ) {                   /* how often the anatomy runs: 1, 2, 4 control steps */
             anat_every = (uint8_t)(anat_every == 1 ? 2 : anat_every == 2 ? 4 : 1);
             app_say("ANATOMY EVERY", anat_every == 1 ? "STEP" : anat_every == 2 ? "2 STEPS" : "4 STEPS");
-        } else if (k == B_PLAY) {                /* the timing test's worst case on / off */
-            swing = (uint8_t)!swing;
-            app_say("POSTURE", swing ? "SWING" : "HELD VOWEL");
+        } else if (k == B_PLAY) {                /* speak the phrase (CHIMERA's plan of it) */
+            say_req = 1;
+            app_say("SPEAKING", "PHRASE");
         }
         else if (k == B_SAVE) {
             if (plat_store_save(OBJ_SETTINGS, &set, sizeof set) == 0) {
@@ -575,7 +586,7 @@ static void draw(void)
     /* the timing test: each core's share of the block, on average and at worst, over the last half second */
     cv_begin(240, 144, C_BLACK);
     {
-        static const char *const ROW[4] = {"CORE 2 TRACT", "CORE 1 ANATOMY", "AUDIO LOAD", "XRUNS"};
+        static const char *const ROW[4] = {"CORE 2 TRACT", "CORE 1 CONTROL", "AUDIO LOAD", "XRUNS"};
         for (i = 0; i < 4u; i++) {
             int32_t y = (int32_t)i * 26;
             cv_text(4, y + 4, &FONT_XS, ROW[i], C_GRAY);
@@ -596,7 +607,7 @@ static void draw(void)
             cv_text(116, y, &FONT_B, t, C_WHITE);
         }
         cv_text(4, 108, &FONT_XS, two_cores ? "TWO CORES" : "ONE CORE", two_cores ? C_HI : C_GRAY);
-        cv_text(100, 108, &FONT_XS, swing ? "POSTURE SWING (PLAY)" : "HELD VOWEL (PLAY: SWING)", C_GRAY);
+        cv_text(100, 108, &FONT_XS, speaking ? "SPEAKING (PLAY)" : "KEYS: VOWEL  PLAY: PHRASE", speaking ? C_HI : C_GRAY);
         {
             char e[28] = "ANATOMY EVERY ";
             char nb[4];
