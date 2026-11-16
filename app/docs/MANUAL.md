@@ -19,7 +19,7 @@ is CHIMERA's flat view, live: the head moving as it sings.
   syllable it starts again.
 - **VOWEL** (FX): the keys play pitch only, the voice holding the vowel the knobs set; the last key held sounds, the
   pitch gliding (Glide) between keys.
-- MIDI in plays as the keys do. **OCT− / OCT+** move the keys an octave. About 50 ms after the sound dies away the
+- MIDI in plays as the keys do, and lights the keys its notes fall on. **OCT− / OCT+** move the keys an octave. About 50 ms after the sound dies away the
   voice rests (nothing is simulated, the output is silent).
 
 ## The buttons

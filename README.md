@@ -56,8 +56,8 @@ recorder and the browser audio chain. The FM-1 gets its own small interface.
 
 ## Status
 
-**0.4.0**, the first launch (the package identity is `FM-1_042` for every version; releases add the version,
-`FM-1_042000400`). CHIMERA's front end, planner and control are ported to C and checked against CHIMERA itself (the
+**0.4.1** (the package identity is `FM-1_042` for every version; releases add the version, `FM-1_042000401`).
+0.4.0 was the first launch; 0.4.1 lights the keys for the notes MIDI in plays. CHIMERA's front end, planner and control are ported to C and checked against CHIMERA itself (the
 lab: identical gestures). Words are sent from the Studio; typing them on the FM-1 is to come.
 
 ## To do

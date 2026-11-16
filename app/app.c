@@ -279,16 +279,32 @@ static void nq_push(uint32_t note, uint32_t vel)   /* audio interrupt */
     nq_head = h + 1;
 }
 
+static uint32_t midi_held[4];                /* main loop: MIDI in's notes down (128 bits), lit on the keys */
+
 static void nq_run(void)                     /* main loop: MIDI in's notes */
 {
     while (nq_tail != nq_head) {
-        uint32_t t = nq_tail;
-        if (nq_vel[t % NQ])
-            live_on(nq_note[t % NQ], nq_vel[t % NQ]);
-        else
-            live_off(nq_note[t % NQ]);
+        uint32_t t = nq_tail, n = nq_note[t % NQ] & 0x7Fu;
+        if (nq_vel[t % NQ]) {
+            midi_held[n >> 5] |= 1u << (n & 31u);
+            live_on((int32_t)n, nq_vel[t % NQ]);
+        } else {
+            midi_held[n >> 5] &= ~(1u << (n & 31u));
+            live_off((int32_t)n);
+        }
         nq_tail = t + 1;
     }
+}
+
+static uint32_t midi_keys(int32_t octave)    /* the keys MIDI in's held notes fall on, at this octave */
+{
+    uint32_t m = 0, k;
+    for (k = 0; k < NKEYS; k++) {
+        int32_t n = 53 + (int32_t)k + 12 * octave;
+        if (n >= 0 && n < 128 && (midi_held[n >> 5] >> (n & 31) & 1u))
+            m |= 1u << k;
+    }
+    return m;
 }
 
 static volatile uint32_t midi_last, midi_last_port, midi_count;   /* the last message in (shown), and how many */
@@ -1447,7 +1463,8 @@ static void input(void)
     ui.keys = keys;
     ui.btn = btn;
     plat_glow(1);                            /* the unlit buttons glow, readable in the dark */
-    plat_leds(btn | (set_dirty ? 1u << B_SAVE : 0u) | (vowel_mode ? 1u << B_FX : 0u), keys);
+    plat_leds(btn | (set_dirty ? 1u << B_SAVE : 0u) | (vowel_mode ? 1u << B_FX : 0u),
+              keys | midi_keys(set.octave));     /* the keys pressed, and the notes MIDI in plays */
 }
 
 void app_input_only(void) { input(); }

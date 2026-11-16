@@ -6,3 +6,6 @@ __pycache__/
 
 # my own release checklist (not published)
 CHECKLIST.md
+
+# my own release notes
+release-notes/

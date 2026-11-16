@@ -33,7 +33,11 @@ jobs:
         with:
           python-version: '3.12'
       - name: Python's packages (the fonts, the screens)
-        run: python3 -m pip install Pillow fonttools
+        run: |
+          # (the fonts' tabular figures: Pillow's raqm, which loads the system's FriBiDi)
+          sudo apt-get install -y -qq libfribidi0
+          python3 -m pip install Pillow fonttools
+          python3 -c "from PIL import features; assert features.check('raqm'), 'Pillow without raqm'"
       - uses: mymindstorm/setup-emsdk@v14
         with:
           version: ${{ env.EMSDK_VERSION }}
