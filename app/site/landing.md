@@ -7,7 +7,8 @@ mouth and nose, simulated. How the voice works is his. This firmware only adapts
 [felucca-bsp](https://github.com/hugelton/felucca-bsp) by Leo Kuroshita, Hügelton Instruments.
 
 This is version {{VERSION}} of FM-1 Chimera Vocal. The FM-1 sings words: each key sings the next syllable of a line, at the key's pitch, and
-PLAY speaks the line. The screen is CHIMERA's flat view, the head moving as it sings. Every sound comes from the
+PLAY speaks the line. ALGORITHM chooses CHIMERA's male, female or child body, each with its own airway and its own
+vowels. The screen is CHIMERA's flat view, the head moving as it sings. Every sound comes from the
 simulated airway, not from samples.
 
 ![The FM-1's screen singing Hello there, I am a voice made of air, a syllable a key: the head moving, the syllable sounding and the next](img/preview-words.gif "WORDS: a syllable a key")
@@ -29,7 +30,8 @@ same fix as [Felucca's](https://github.com/hugelton/Felucca/commit/f4cbb6a2a0a35
 (Laurens, PR #35). Not yet tested with this firmware on a newer unit.
 
 - The [Studio](studio/) prepares the words the FM-1 sings, with the CMU Pronouncing Dictionary, lets you try them on
-  an emulated FM-1 in the browser, and sends them to yours over USB.
+  an emulated FM-1 in the browser, and sends them to yours over USB. You can also type them on the FM-1 itself: EDIT
+  opens the word editor, a letter a key.
 - [Install](install/) it from Chrome or Edge, with the FM-1 connected by USB.
 - The [Manual](manual/) explains the keys, the knobs and the screen.
 - The [Source](https://github.com/shan-sherif/fm-1-chimera-vocal): the voice's port is MIT (CHIMERA's licence), the

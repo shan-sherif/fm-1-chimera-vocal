@@ -26,9 +26,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive                                # fm1-base, and felucca-bsp inside it
+      - uses: actions/checkout@v4                              # (fm1-base and felucca-bsp are plain folders: base/)
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'

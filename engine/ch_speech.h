@@ -68,6 +68,9 @@ int ch_word(const char *word, int reduce, ch_lookup_fn lookup, void *user, ch_se
 int ch_letter_to_sound(const char *word, ch_seg_t *out, int cap);
 /* 1: the FM-1's letter-to-sound additions before CHIMERA's rules (no dictionary on the device); 0: CHIMERA's alone */
 extern int ch_lts_device;
+/* the body whose calibrated phonemes and vowels the front end, the planner and the vowel pad use: 0 the adult male
+ * (the start), 1 the adult female, 2 the child (CHIMERA's BodyMix presets) */
+void ch_speech_body(int body);
 int ch_arpabet(const char *phones, ch_seg_t *out, int cap);
 
 void ch_plan_defaults(ch_plan_opts_t *o);

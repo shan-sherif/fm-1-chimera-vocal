@@ -25,3 +25,38 @@ wait 700
 shot home-vowel.png
 key 7 up
 wait 300
+# the word editor (EDIT): slot 1's "air." becomes "song", the last key still held (lit on the screen's keyboard)
+tap HOME
+wait 300
+tap EDIT
+wait 1500
+tap OCT-
+tap OCT-
+tap OCT-
+tap OCT-
+tapkey 18
+tapkey 14
+tapkey 13
+key 6 down
+wait 100
+shot edit.png
+key 6 up
+# the same in QWERTY (FX): the black keys Q..P and a space, the white A..L then Z..M
+tap FX
+wait 1500
+key 3 down
+wait 100
+shot edit-qwerty.png
+key 3 up
+tap FX
+tap EDIT
+tap EDIT
+wait 300
+# the child's body (ALGORITHM): the smaller head, CHILD in the header
+tap HOME
+wait 300
+spin ALGO 2
+wait 1800
+shot body-child.png
+spin ALGO -2
+wait 600

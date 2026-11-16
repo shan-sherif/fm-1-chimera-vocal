@@ -43,11 +43,14 @@ Firmware for the M-VAVE FM-1 that does one thing: a simulated human voice. Every
   release. PLAY speaks the line.
 - **VOWEL** (FX): the keys play pitch, and the knobs move the mouth through CHIMERA's vowel space; twelve vowel
   snapshots under FX + a key.
-- **The knobs:** five pages of CHIMERA's own controls on K1-K4 (sing, shape, mouth, source, play), Bright on
-  ALGORITHM, eight voice presets on PRESET.
+- **The knobs:** five pages of CHIMERA's own controls on K1-K4 (sing, shape, mouth, source, play), the body
+  (male, female, child) on ALGORITHM, eight voice presets on PRESET.
 - **The screen:** CHIMERA's flat view, live: the head moving as it sings, in CHIMERA's colours.
 - **The Studio:** a web page that prepares the words (eight slots) with the CMU Pronouncing Dictionary, lets you try
   them on an emulated FM-1 in the browser, and sends them to yours over USB.
+- **Typing on the FM-1:** EDIT opens a word editor, a letter a key (A-Z or QWERTY in two rows), for the same eight
+  slots.
+- **MIDI in** plays the voice as the keys do, and lights the keys its notes fall on.
 
 The [manual](app/docs/MANUAL.md) has the keys, buttons and knobs in full.
 
@@ -56,23 +59,27 @@ recorder and the browser audio chain. The FM-1 gets its own small interface.
 
 ## Status
 
-**0.4.1** (the package identity is `FM-1_042` for every version; releases add the version, `FM-1_042000401`).
-0.4.0 was the first launch; 0.4.1 lights the keys for the notes MIDI in plays. CHIMERA's front end, planner and control are ported to C and checked against CHIMERA itself (the
-lab: identical gestures). Words are sent from the Studio; typing them on the FM-1 is to come.
+**0.5.0** (the package identity is `FM-1_042` for every version; releases add the version, `FM-1_042000500`).
+0.4.0 was the first launch; 0.4.1 lit the keys for the notes MIDI in plays; 0.5.0 adds typing words on the FM-1
+(EDIT opens the word editor, a letter a key; the knob pages moved to SEL), CHIMERA's female and child bodies on
+ALGORITHM (Bright moved to page 5), and carries fm1-base in this repository
+([Based on fm1-base](#based-on-fm1-base)). CHIMERA's front end, planner and control are ported to C and checked against
+CHIMERA itself (the lab: identical gestures). Words come from the Studio or are typed on the FM-1.
 
 ## To do
 
-- **The female and child voices:** CHIMERA's airway builder ported, for the Body knob (page 5).
-- **Typing words on the FM-1** (phone-style multi-tap, saved in the word slots).
+- **Blended bodies:** the three bodies (male, female, child) are CHIMERA's own, precomputed. Bodies in between, like
+  CHIMERA's female and child sliders, would blend them as CHIMERA does: the anatomy's four dimensions and the
+  calibrated phoneme and vowel targets by weight (`ArticPatch::blend`). The waveguide is the same size for every body,
+  so no airway builder is needed and switching costs what it does now. Worth exploring for more varied voices if
+  shifting pitch outside the FM-1 (an external pitch or formant shifter) doesn't already give enough variety.
+- **The child's upper formants:** the child's shorter tract follows CHIMERA a little less closely above 1 kHz than
+  the male's and female's (the waveguide's lengths rounding to whole samples), still clearly a child.
 - **Sharper consonants:** a faster anatomy (more of it in RAM, skipped while the tongue is still) so it can run every
   2nd control step (`ANAT_EVERY` in `app/app.c`; every 4th now).
 - **Expression:** the keys' pressure and MIDI's mod wheel and pitch bend (vibrato, breath).
 - **The beatbox** (CHIMERA's, on SEQ, with a 2D view).
-- **A cleanup of the folders:** fm1-base's template leftovers (`app/README.md`, the template's tests
-  `app/tests/basic.txt` and `screens.txt`, which test the template's behaviour), the superseded `app/tests/timing.txt`
-  and `lab/tools/gen_phrase_header.py` (it made the phrase header the front end replaced), the template's unused code
-  in `app/app.c` (`WAVE_NAME`, `BTN_NAME`, `ENC_NAME`, the `wave` setting), and old local build outputs
-  (`app/build/vocal-*`).
+- **A random word generator:** fill a word slot with random words to sing, for ideas and happy accidents.
 
 ## Two cores
 
@@ -114,12 +121,25 @@ Studio, SAVE on a preset, then a power cycle).
 | Path | What |
 | --- | --- |
 | `engine/` | The C port of CHIMERA's voice (MIT, Jameson Hodge's notice kept): `ch_voice.c` the literal audio rate (the reference), `ch_fast.c` the same rearranged for the FM-1 (the full-physics attempt), `ch_tract.c` the anatomy, `ch_wave.c` the FM-1's waveguide tract, `ch_control.c` the control rate (articulators, gestural score, source, contacts), `ch_speech.c` the English front end, planner and vowel pad (with `ch_phon_data.h`, generated from CHIMERA's tables, and `ch_dict_data.h`, ~480 CMUdict words), `ch_live.c` live singing, `ch_profile.c` the flat view's outlines, `ch_common.h` / `ch_str.h` what they share |
-| `app/` | The firmware, on fm1-base (started from its template): `app.c` (the voice on two cores, the words, the pages, VOWEL, the presets, the screens), `app.h`, `fm1.toml`; `dsp/voice_male.h` (the airway's layout, generated from a recording until the airway builder is ported), `dsp/words_default.h` (CHIMERA's presets as the first word slots); `web/studio.html` the Studio; `site/landing.md` the front page; `docs/MANUAL.md` and its screenshots; `tests/` the simulator's scripts |
+| `app/` | The firmware, on fm1-base (started from its template): `app.c` (the voice on two cores, the words, the word editor, the pages, VOWEL, the presets, the screens), `app.h`, `fm1.toml`; `dsp/voice_bodies.h` (CHIMERA's three bodies, male, female and child: their anatomy settings, speaking pitch and vowel ranges), `dsp/voice_male.h` (the male airway's full layout, for the lab's full-physics test), `dsp/words_default.h` (CHIMERA's presets as the first word slots); `web/studio.html` the Studio; `site/landing.md` the front page; `docs/MANUAL.md` and its screenshots; `tests/` the simulator's scripts |
 | `tools/` | `make_site.py` (the site: fm1-base's, plus the Studio, the emulator, CHIMERA's colours, the credits, the licence texts), `manual_shots.sh` (the manual's screenshots from the simulator) |
 | `lab/` | The test bench: CHIMERA itself as a Rust library, the recorder, the C replay checks, the front end's checks, comparisons, cost estimates, the table generators |
-| `base/` | [fm1-base](https://github.com/charlesvestal/fm1-base) by Charles Vestal (MPL-2.0), a git submodule pinned to a tested revision, with felucca-bsp inside |
+| `base/` | [fm1-base](https://github.com/charlesvestal/fm1-base) by Charles Vestal (MPL-2.0), with felucca-bsp in `base/bsp/`: plain folders, copied from upstream ([Based on fm1-base](#based-on-fm1-base)) |
 | `docs/` | `full-physics-on-fm1.md`: CHIMERA's full airway on the FM-1, measured, for whoever optimises it |
 | `LICENSE`, `LICENSES/` | Which licence covers which files, and the full texts |
+
+## Based on fm1-base
+
+The platform under the app, copied into this repository in 0.5.0 (2026-11-16; a git submodule until then), so it can
+be changed here. Its files keep their MPL-2.0 headers and their authors' notices (`base/LICENSE`, `base/LICENSING.md`,
+`base/CREDITS.md`); changes made here to them are MPL-2.0 too. What this firmware does not use was left out: fm1-base's
+`template/`, `examples/` and `skill/`, felucca-bsp's `examples/`, and their GitHub workflows. Upstream fixes are carried
+over by hand, against these commits:
+
+| Here | From | Commit |
+| --- | --- | --- |
+| `base/` (but `base/bsp/`) | [charlesvestal/fm1-base](https://github.com/charlesvestal/fm1-base) | `c8e0599` |
+| `base/bsp/` | [hugelton/felucca-bsp](https://github.com/hugelton/felucca-bsp) | `18eadad` |
 
 ## Building
 
@@ -168,7 +188,10 @@ minutes of random playing; it went silent before 0.0.9's fix).
 - `cargo run --release -- compare ref.wav other.wav[@shift]` compares level and spectrum frame by frame;
   `-- timeline ref.wav other.wav` frame by frame; `-- psupra FROM TO` CHIMERA's pressure above the glottis.
 - `tools/pi_cost.py` estimates per-sample instruction counts from the FM-1 compiler's assembly.
-- `tools/gen_voice_header.py out/male.rec out/male.art > ../app/dsp/voice_male.h` makes the firmware's airway header.
+- `tools/gen_voice_header.py out/male.rec out/male.art > ../app/dsp/voice_male.h` makes the male airway's header;
+  `tools/gen_bodies_header.py out/male.art out/female.art out/child.art > ../app/dsp/voice_bodies.h` the three bodies'
+  (after `lab record "..." female` and `child`); `lab phonemes > ../engine/ch_phon_data.h` each body's calibrated
+  phonemes and vowels.
 - `cargo run --release -- phonemes > ../engine/ch_phon_data.h` writes CHIMERA's phoneme and vowel tables;
   `tools/gen_dict.py tools/common_words.txt ../external/chimera-vocal-synth/public/data/cmudict.txt.gz > ../engine/ch_dict_data.h`
   the built-in pronunciations; `tools/gen_words_default.py` the first word slots (`app/dsp/words_default.h`).
@@ -186,7 +209,7 @@ fm-1-midi-mania and fm1-base. Of these only CHIMERA's code is ported here; the o
 
 ## Licence
 
-See [LICENSE](LICENSE): the port of CHIMERA's voice (`engine/`, `app/dsp/voice_male.h`) is MIT, keeping Jameson
+See [LICENSE](LICENSE): the port of CHIMERA's voice (`engine/`, `app/dsp/voice_male.h`, `app/dsp/voice_bodies.h`) is MIT, keeping Jameson
 Hodge's copyright; the files started from fm1-base's template (`app/app.c`, `app/app.h`) are MPL-2.0; this project's own
 files (the Studio, the site, the tools, the lab) are MIT, Shan-Sherif; the CMUdict entries are under CMU's BSD-style
 licence. The full texts are in [LICENSES/](LICENSES/). The firmware package is MPL-2.0 AND MIT, with the JieLi SDK's

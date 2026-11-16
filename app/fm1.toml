@@ -1,6 +1,6 @@
 # Build settings (fm1-base tools/build.py). Started from fm1-base's template.
 name = "CHIMERA"               # the build's file names (chimera-X.Y.Z.fwsc); APP_NAME is in app.h. The pages say "FM-1 Chimera Vocal"
-version = "0.4.1"             # the release: the site (GitHub Pages, on a push to main), the package, the boot screen
+version = "0.5.0"             # the release: the site (GitHub Pages, on a push to main), the package, the boot screen
 id_prefix = "FM-1_042"         # package identity, the same number for every version: the plain identity (what
                                # M-UPGRADE and the plain handshake read) is always FM-1_042; dev builds are FM-1_04200,
                                # releases FM-1_042XXYYZZ (the version, for the installer's check after an install)
@@ -14,7 +14,7 @@ cpu2_fallback = true           # if the second core fails: one core until power-
 words = "words.tsv"
 ble = false
 emu = ["midi", "port"]          # the browser emulator: USB MIDI (the Studio's SysEx) and a port other pages reach                    # no radio: the voice needs the RAM and the CPU
-# the site (tools/make_site.py, tools/publish_site.sh)
+# the site (tools/make_site.py; published by .github/workflows/pages.yml)
 tagline = "a physically modelled human voice for the M-VAVE FM-1, ported from CHIMERA"
 repo = "https://github.com/shan-sherif/fm-1-chimera-vocal"
 licence = "MPL-2.0 AND MIT"   # fm1-base's and the template's files MPL-2.0, CHIMERA's port and this project's MIT (LICENSE)

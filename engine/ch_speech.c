@@ -28,8 +28,21 @@ typedef struct {
 #include "ch_phon_data.h"
 #include "ch_dict_data.h"
 
-#define NPHON ((int)(sizeof CH_PHONEMES / sizeof CH_PHONEMES[0]))
-#define NVOW ((int)(sizeof CH_VOWELS / sizeof CH_VOWELS[0]))
+/* the body's calibrated tables (CHIMERA's phoneme(ipa, body), vowel_artic(ipa, body) for its three bodies): the
+ * same inventory in each, so the sizes are the male's */
+#define NPHON ((int)(sizeof CH_PHONEMES_MALE / sizeof CH_PHONEMES_MALE[0]))
+#define NVOW ((int)(sizeof CH_VOWELS_MALE / sizeof CH_VOWELS_MALE[0]))
+static const ch_phon_t *ph_tab = CH_PHONEMES_MALE;
+static const ch_vowel_t *vow_tab = CH_VOWELS_MALE;
+#define CH_PHONEMES ph_tab
+#define CH_VOWELS vow_tab
+void ch_speech_body(int body)
+{
+    if (body < 0 || body > 2)
+        body = 0;
+    ph_tab = CH_PHONEMES_BODY[body];
+    vow_tab = CH_VOWELS_BODY[body];
+}
 #define BIT(k) (1u << (k))
 #define CH_NAN ((ch_real)__builtin_nanf(""))
 #if defined(CH_FM1)

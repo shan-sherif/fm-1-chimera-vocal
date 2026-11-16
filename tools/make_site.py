@@ -134,7 +134,7 @@ def theme_doc(path, up):
 
 
 # the emulator's page (fm1-base's web/emu) in the same palette: its ground black, its cards the frame's, its start
-# button an action (green); the drawn FM-1 itself as it is
+# button an action (green); the drawn FM-1 too (from 0.5.0), in CHIMERA's colours
 EMU_CSS = """
 /* VOCAL: CHIMERA's palette (src/ui/colors.ts), as the Studio */
 :root, :root[data-theme], :root:not([data-theme="light"]) {
@@ -148,6 +148,25 @@ h1 { color: var(--accent); letter-spacing: .08em; text-transform: uppercase; fon
                 text-transform: uppercase; font: 600 1rem ui-sans-serif, system-ui, sans-serif; }
 .bar button, .speak button { background: #000; color: var(--accent); border-color: var(--muted); border-radius: 3px; }
 .bar button[aria-pressed="true"] { background: var(--accent); color: #000; }
+/* the drawn FM-1 (fm1-base's web/fm1panel.js) in CHIMERA's colours: a dark grey body drawn in blue lines,
+   the keys as the word editor's screen draws them (the white keys dark, the black keys blue), lights blue, keys held
+   green. fm1panel.js gives its parts fixed fills: CSS beats an SVG fill attribute, and these attribute selectors
+   (one attribute each) stay weaker than its .lit / .dim rules and the page's .held, so the lights still win */
+:root { --panel-lit: #4fb6f2; --panel-lit-ink: #000; --panel-lit-white: #5be381; --panel-lit-black: #5be381;
+        --panel-dim: #133954; --panel-dim-white: #133954; --panel-dim-black: #2a6f9e; }
+#panel [fill="#3a3d42"] { fill: #202326; stroke: #1f5f8c; stroke-width: 2; }          /* the body: dark grey */
+#panel [fill="#26282c"] { fill: #000; stroke: #133954; stroke-width: 1.5; }           /* the knobs', buttons', keys' trays */
+#panel [fill="#111214"] { fill: #000; stroke: #1f5f8c; stroke-width: 2; }             /* the screen's bezel */
+[fill="#1f2124"] { fill: #0b2233; stroke: #1f5f8c; }                                   /* the knobs */
+[fill="#2e3135"] { fill: #0b2233; stroke: #1f5f8c; }                                   /* the buttons */
+[fill="#e8e8ea"] { fill: #4fb6f2; }                                                    /* the labels */
+[stroke="#e8e8ea"] { stroke: #eef6f8; }                                                /* the knobs' pointers */
+[fill="#d9dadc"] { fill: #0b2233; stroke: #1f5f8c; stroke-width: 1.5; }               /* the white keys */
+[fill="#c9cacd"] { fill: #1f5f8c; }                                                    /* the black keys */
+.held .btnface, .held .keyface { stroke: #5be381; }
+.latched .btnface, .latched .keyface { stroke: #ff73cf; }
+.hit:focus-visible { outline-color: #5be381; box-shadow: 0 0 0 6px #000; }
+.start { background: rgba(0, 0, 0, .6); }
 """
 
 

@@ -1,31 +1,25 @@
 /* SPDX-License-Identifier: MPL-2.0
  * Copyright (C) 2026 Charles Vestal
  * Copyright (C) 2026 Shan-Sherif */
-/* The template app: every control on the screen as it arrives, by the name the app knows it by (plat.h B_*, EN_*,
- * the keys), and a few of them doing something: the keys play a voice and go out over USB-MIDI (MIDI in plays it
- * too), OCT- / OCT+ set the octave, PRESET the wave, MASTER the volume, SAVE stores the settings; the keys are
- * played with velocity and pressure (lib/touch.h), shown on them. One of each thing the platform offers, kept short. Part of the unity build (device/unity.c, host/plat_host.c), after the platform:
- * gfx.c and announce.c are in scope. */
+/* FM-1 Chimera Vocal: CHIMERA's voice on fm1-base (started from its template). The keys sing the word slot's
+ * syllables (WORDS) or hold a vowel (VOWEL, FX), with velocity and pressure (lib/touch.h), and go out over USB-MIDI;
+ * MIDI in plays and lights the keys; five knob pages, eight presets, SAVE. Part of the unity build (device/unity.c,
+ * host/plat_host.c), after the platform: gfx.c and announce.c are in scope. */
 #include "fastmath.h"
 
 #define SET_MAGIC 0x43484D32u            /* "CHM2": the settings record; another magic loads defaults */
 typedef struct {
     uint32_t magic;
     int8_t octave;                       /* -2 .. +2 */
-    uint8_t wave;                        /* 0 sine, 1 triangle */
+    uint8_t wave;                        /* unused (the template's wave): kept so saved settings keep their layout */
     uint8_t ble_off;                     /* Bluetooth switched off (REC held); 0, the default: on */
     uint8_t slot;                        /* the word slot the keys sing (0..WORDS_SLOTS-1) */
     uint8_t preset;                      /* the voice preset (0..NPRESETS-1) */
-    uint8_t rsv[3];
+    uint8_t kb;                          /* the word editor's keys: 0 A-Z, 1 QWERTY (0.5.0; was spare, saved as 0) */
+    uint8_t rsv[2];
 } settings_t;
 static settings_t set;
 static uint8_t set_dirty;                /* changed since the last save: SAVE is lit */
-
-static const char *const WAVE_NAME[] = {"SINE", "TRIANGLE"};
-/* the controls by their names in plat.h, in its order */
-static const char *const BTN_NAME[NB] = {"FX", "SEL", "ENV", "LFO", "EDIT", "GLO", "HOME", "SAVE", "ARP", "SEQ",
-                                         "PLAY", "REC", "OCT-", "OCT+"};
-static const char *const ENC_NAME[NE] = {"SELECT", "ALGO", "PRESET", "K1", "K2", "K3", "K4"};
 
 /* ------------------------------------------------------------------ voice --- */
 /* CHIMERA's voice (engine/, MIT, Jameson Hodge) on both cores, with the waveguide tract (ch_wave.c: CHIMERA's full
@@ -43,10 +37,13 @@ static const char *const ENC_NAME[NE] = {"SELECT", "ALGO", "PRESET", "K1", "K2",
 #include "ch_control.h"
 #include "ch_live.h"
 #include "voice_male.h"
+#include "voice_bodies.h"                   /* CHIMERA's three bodies: male, female, child (ALGORITHM) */
 
 /* the words: the slots the Studio sends (below, "words"); CHIMERA's presets until it has (lab/tools/gen_words_default.py) */
 #include "words_default.h"
-#define SPEECH_F0 112.0f                     /* the adult male's speaking pitch (lab record: CHIMERA's render) */
+static uint8_t body_cur;                     /* main loop: the body (0 male, 1 female, 2 child; CH_BODIES) */
+static volatile uint8_t body_req, body_audio; /* the body asked for, and the one the audio has (it switches at a block) */
+#define SPEECH_F0 (CH_BODIES[body_cur].f0)   /* the body's speaking pitch (lab record: CHIMERA's render) */
 
 #define NSUB ((int)(APP_BLOCK / VM_CTRL))           /* control steps a block */
 /* a block on plat_ticks24's clock (24 per microsecond). (256 * 24000000 overflows 32 bits: v0.0.1 showed every
@@ -154,7 +151,7 @@ static void voice_init(void)
 {
     int s;
     ch_source_t src;
-    vm_tract_setup(&tract);
+    body_tract_setup(&tract, 0);
     ch_control_init(&ctl, (float)VM_FS, VM_CTRL, 1.0f);   /* HumanVoice::new: the neutral posture, at rest */
     src = ctl.source;
     src.f0 = SPEECH_F0;
@@ -335,6 +332,19 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
     midi_in();
     mb_take();
     vp_take();
+    if (body_req != body_audio) {            /* another body (CHIMERA's set_body): its anatomy, the waveguide anew. Here, as
+                                              * the block starts, the second core is idle; this block's shapes were the
+                                              * old body's, so it renders none; the sound fades back in (gain_now) */
+        int s2;
+        body_audio = body_req;
+        body_tract_setup(&tract, body_audio);
+        ctl.k = CH_BODIES[body_audio].scale;
+        ch_tract_apply(&tract, ctl.x, 0.0f);
+        ch_wave_init(&wave, (float)VM_FS, VM_CTRL, tract.k, tract.lip_s);
+        for (s2 = 0; s2 < NSUB; s2++)
+            steps[cur][s2].has_shape = 0;
+        gain_now = 0.0f;
+    }
     if (n > APP_BLOCK)
         n = APP_BLOCK;
     /* At rest (the score empty, the breath gone, the sound died away for QUIET_BLOCKS blocks) nothing is simulated:
@@ -425,6 +435,7 @@ static void settings_defaults(void)
     set.slot = 0;
     set.preset = 0;
     set.ble_off = 0;
+    set.kb = 0;
 }
 
 void app_init(void)
@@ -436,6 +447,8 @@ void app_init(void)
         set.slot = 0;
     if (set.preset >= NPRESETS)
         set.preset = 0;
+    if (set.kb > 1u)
+        set.kb = 0;
     voice_init();
     words_load();
     words_select(set.slot);
@@ -704,16 +717,16 @@ int app_sysex(const uint8_t *p, uint32_t n)
 
 /* ------------------------------------------------------- knobs, pages, presets --- */
 /* K1..K4 are the page's four values (CHIMERA's controls, its ranges: src/ui/components/VoiceControls.tsx, SingPanel.tsx);
- * SELECT turns the page, HOME is WORDS and page 1, EDIT steps pages 2-5, FX is VOWEL (the keys play pitch, the knobs
- * move through CHIMERA's vowel pad). ALGORITHM is Bright. PRESET picks a voice preset, loaded when the knob rests; SAVE
+ * SELECT turns the page, HOME is WORDS and page 1, SEL steps pages 2-5, FX is VOWEL (the keys play pitch, the knobs
+ * move through CHIMERA's vowel pad). ALGORITHM is Body (Bright on page 5's K4 from 0.5.0; they were the other way round before). PRESET picks a voice preset, loaded when the knob rests; SAVE
  * keeps the knobs in it (and the vowel snapshots). HOME held + PRESET picks the word slot. */
 enum {
     K_VIB, K_RATE, K_BREATHY, K_RING,         /* 1 SING */
     K_JAW, K_LIPS, K_LARYNX, K_VELUM,         /* 2 SHAPE */
     K_ROUND, K_PROT, K_ROOT, K_CURL,          /* 3 MOUTH */
     K_BREATH, K_PRESSED, K_ROUGH, K_FRY,      /* 4 SOURCE */
-    K_GLIDE, K_SPEED, K_FALSE, K_BODY,        /* 5 PLAY */
-    K_BRIGHT,                                 /* ALGORITHM */
+    K_GLIDE, K_SPEED, K_FALSE, K_BODY,        /* 5 PLAY: K4 is Bright from 0.5.0 (the page table); Body on ALGORITHM */
+    K_BRIGHT,                                 /* (the order is the saved presets': kept) */
     K_FRONT, K_OPEN,                          /* VOWEL (with K_VELUM as Nasal, K_ROUND as Rounding) */
     NK
 };
@@ -733,7 +746,7 @@ static const knob_t KNOB[NK] = {
     {"BREATH", 2, 22, 8, 0.25f, F_X, 0},      {"PRESSED", 0, 1, 0.5f, 0.02f, F_PCT, 0},
     {"ROUGH", 0, 1, 0.1f, 0.02f, F_PCT, 0},  {"FRY", 0, 1, 0, 0.02f, F_PCT, 0},
     {"GLIDE", 0.005f, 0.6f, 0.06f, 1.08f, F_MS, 1}, {"SPEED", 0.5f, 1.8f, 1, 0.05f, F_X, 0},
-    {"F.FOLDS", 0, 1, 0, 0.02f, F_PCT, 0},   {"BODY", 0, 0, 0, 0, F_BODY, 0},
+    {"F.FOLDS", 0, 1, 0, 0.02f, F_PCT, 0},   {"BODY", 0, 2, 0, 1, F_BODY, 0},
     {"BRIGHT", 0, 1, 0.25f, 0.02f, F_PCT, 0},
     {"FRONT", 0, 1, 0.45f, 0.02f, F_F2, 0},  {"OPEN", 0, 1, 0.35f, 0.02f, F_F1, 0},
 };
@@ -741,7 +754,7 @@ static const knob_t KNOB[NK] = {
 #define PAGE_VOWEL 5
 static const uint8_t PAGE[NPAGES][4] = {
     {K_VIB, K_RATE, K_BREATHY, K_RING}, {K_JAW, K_LIPS, K_LARYNX, K_VELUM}, {K_ROUND, K_PROT, K_ROOT, K_CURL},
-    {K_BREATH, K_PRESSED, K_ROUGH, K_FRY}, {K_GLIDE, K_SPEED, K_FALSE, K_BODY}, {K_FRONT, K_OPEN, K_VELUM, K_ROUND},
+    {K_BREATH, K_PRESSED, K_ROUGH, K_FRY}, {K_GLIDE, K_SPEED, K_FALSE, K_BRIGHT}, {K_FRONT, K_OPEN, K_VELUM, K_ROUND},
 };
 static const char *const PAGE_NAME[NPAGES] = {"SING", "SHAPE", "MOUTH", "SOURCE", "PLAY", "VOWEL"};
 /* the vowel pad's formant ranges (the adult male's: CHIMERA's VowelMap), log scales; FRONT 0 is the front (F2 high) */
@@ -749,8 +762,10 @@ static const char *const PAGE_NAME[NPAGES] = {"SING", "SHAPE", "MOUTH", "SOURCE"
 #define PAD_F1_HI 950.0f
 #define PAD_F2_LO 700.0f
 #define PAD_F2_HI 2700.0f
-static float pad_f1(float open) { return PAD_F1_LO * fm_exp2f(open * fm_log2f(PAD_F1_HI / PAD_F1_LO)); }
-static float pad_f2(float front) { return PAD_F2_HI * fm_exp2f(-front * fm_log2f(PAD_F2_HI / PAD_F2_LO)); }
+/* (a female's or a child's vowels sit higher: the ranges scale by the body's calibrated vowels, so a place on the pad,
+ * and a snapshot, is the same vowel in any body) */
+static float pad_f1(float open) { return CH_BODIES[body_cur].pad_f1 * PAD_F1_LO * fm_exp2f(open * fm_log2f(PAD_F1_HI / PAD_F1_LO)); }
+static float pad_f2(float front) { return CH_BODIES[body_cur].pad_f2 * PAD_F2_HI * fm_exp2f(-front * fm_log2f(PAD_F2_HI / PAD_F2_LO)); }
 
 /* the voice presets (this firmware's own: CHIMERA has none) and the vowel snapshots, as the store keeps them */
 #define NSNAP 12
@@ -765,6 +780,8 @@ static const char *const PRESET_NAME[NPRESETS] = {"NATURAL", "BREATHY", "BELT", 
 static float kv[NK];                          /* the knobs now */
 static uint8_t page, vowel_mode;
 static int8_t preset_pending = -1;            /* PRESET turned: the preset that loads when it rests */
+static int8_t body_pending = -1;              /* ALGORITHM turned: the body it switches to when it rests */
+static uint32_t body_turned_at;
 static uint32_t preset_turned_at;
 
 static void preset_factory(int i, float *v)
@@ -935,8 +952,12 @@ static void knob_turn(int id, int32_t e)
 {
     const knob_t *d = &KNOB[id];
     float v = kv[id];
-    if (d->fmt == F_BODY) {
-        app_say("BODY", "MALE: MORE TO COME");
+    if (d->fmt == F_BODY) {                   /* ALGORITHM: the body, chosen now, switched when the knob rests */
+        int i = (body_pending >= 0 ? body_pending : body_cur) + (int)e;
+        i = i < 0 ? 0 : i >= NBODIES ? NBODIES - 1 : i;
+        body_pending = (int8_t)i;
+        body_turned_at = plat_ms();
+        app_say("BODY", CH_BODIES[i].name);
         return;
     }
     v = d->log ? v * fm_exp2f((float)e * fm_log2f(d->step)) : v + (float)e * d->step;
@@ -973,10 +994,26 @@ static void knob_text(int id, char *b)
             text_cat(b, d);
         }
         break;
-    case F_BODY: text_cat(b, "MALE"); break;
+    case F_BODY: text_cat(b, CH_BODIES[(int)(v + 0.5f) % NBODIES].name); break;
     case F_F2: int_text((int32_t)(pad_f2(v) + 0.5f), b); break;
     case F_F1: int_text((int32_t)(pad_f1(v) + 0.5f), b); break;
     }
+}
+
+/* the body the knobs hold (ALGORITHM, or a preset's): the front end's calibrated tables and the drawn head at once,
+ * the audio's anatomy at its next block (app_render) */
+static void home_body(void);
+static void body_apply(void)
+{
+    int b = (int)(kv[K_BODY] + 0.5f);
+    if (b < 0 || b >= NBODIES)
+        b = 0;
+    if (b == body_cur)
+        return;
+    body_cur = (uint8_t)b;
+    ch_speech_body(b);
+    home_body();
+    body_req = (uint8_t)b;
 }
 
 static void preset_apply(int i)
@@ -986,6 +1023,7 @@ static void preset_apply(int i)
         if (k != K_FRONT && k != K_OPEN)
             kv[k] = fm_clampf(presets.v[i][k], KNOB[k].min, KNOB[k].max);
     set.preset = (uint8_t)i;
+    body_apply();                             /* (a preset carries its body) */
     vp_send();
 }
 
@@ -1143,6 +1181,14 @@ static struct {
     uint32_t turned_at[NE];              /* when each was last turned: it shows lit for a moment */
     uint8_t redraw;
 } ui;
+/* the word editor (EDIT: below, before input) */
+#define ED_MAX 150                            /* (lyric holds 160) */
+static struct {
+    uint8_t on, slot, dirty, drop_armed;
+    uint8_t n, cur;                           /* the length, the cursor (0..n) */
+    char t[ED_MAX + 1];
+    uint32_t del_at;                          /* OCT- went down (its repeat), 0: not held */
+} ed;
 
 static void text_cat(char *d, const char *s)
 {
@@ -1205,6 +1251,14 @@ static void speak(void)
     if (ann_on() && ann_where()) {
         octave_text(o);
         t[0] = 0;
+        if (ed.on) {                         /* the editor: the slot and its words as typed */
+            char e[ED_MAX + 20] = "EDIT WORDS ", sl[4] = {(char)('1' + ed.slot), '.', ' ', 0};
+            text_cat(e, sl);
+            text_cat(e, ed.n ? ed.t : "EMPTY");
+            ann_say(e, 0, ANN_NOW);
+            ann_tick(plat_ms());
+            return;
+        }
         text_cat(t, APP_NAME ". OCTAVE ");
         text_cat(t, o);
         text_cat(t, ". WORDS ");
@@ -1292,6 +1346,277 @@ static void ble_device_button(void)
     app_say(ev == BTDEV_CONNECTING ? btdev_word(ev) : "BLE", ev == BTDEV_CONNECTING ? btdev_name() : btdev_word(ev));
 }
 
+/* ---------------------------------------------------------------- the word editor --- */
+/* EDIT: a word slot's words typed on the keys, a letter a key: the 26 lowest keys are A..Z from the bottom up (the black
+ * keys too), the top key (G5) a space. K1 moves the cursor; K2 changes the character before it (A..Z, space, then
+ * , . ? ! ' -, for punctuation); OCT- deletes before the cursor (held: again and again), OCT+ after it. PRESET picks the
+ * slot to edit (with nothing unsaved). PLAY speaks the words as they are; SAVE puts them in the slot (the Studio's
+ * document, OBJ_WORDS: the Studio reads them back) and leaves; EDIT or HOME leaves (with changes, a second press drops
+ * them). The keys don't sing meanwhile; MIDI in still does. FX switches the keys to QWERTY in two rows and back (kept
+ * with the settings): the black keys QWERTYUIOP and a space (the last), the white keys ASDFGHJKL then ZXCVBNM. (Its
+ * state, ed, is with the UI's, above.) */
+static const char ED_CHARS[] = "abcdefghijklmnopqrstuvwxyz ,.?!'-";
+static char ed_key_char(uint32_t k)           /* the character key k types, in the layout chosen */
+{
+    static const uint8_t WK[16] = PLAT_WHITE_KEYS, BK[11] = PLAT_BLACK_KEYS;
+    static const char QW_WHITE[] = "asdfghjklzxcvbnm", QW_BLACK[] = "qwertyuiop ";
+    uint32_t i;
+    if (!set.kb)
+        return k < 26u ? (char)('a' + k) : ' ';
+    for (i = 0; i < 16u; i++)
+        if (WK[i] == k)
+            return QW_WHITE[i];
+    for (i = 0; i < 11u; i++)
+        if (BK[i] == k)
+            return QW_BLACK[i];
+    return ' ';
+}
+static uint32_t ed_row_keys(void)            /* QWERTY: the keys that start its rows, Q (the first black), A, Z (whites 1,
+                                              * 10), and the space (the last black) */
+{
+    static const uint8_t WK[16] = PLAT_WHITE_KEYS, BK[11] = PLAT_BLACK_KEYS;
+    return 1u << BK[0] | 1u << WK[0] | 1u << WK[9] | 1u << BK[10];
+}
+
+static void ed_slot_say(const char *a)
+{
+    char sl[12] = "WORDS ";
+    sl[6] = (char)('1' + ed.slot);
+    sl[7] = 0;
+    app_say(a, sl);
+}
+
+static void ed_load(int slot)
+{
+    uint32_t n = slot_text[slot] ? slot_len[slot] : 0u, i;
+    ed.slot = (uint8_t)slot;
+    if (n > ED_MAX)
+        n = ED_MAX;
+    for (i = 0; i < n; i++)
+        ed.t[i] = slot_text[slot][i];
+    ed.t[n] = 0;
+    ed.n = ed.cur = (uint8_t)n;
+    ed.dirty = ed.drop_armed = 0;
+}
+
+static void ed_open(void)
+{
+    uint32_t k;
+    for (k = 0; k < NKEYS; k++)               /* the keys held stop singing: from now on they type */
+        if (ui.keys >> k & 1u)
+            live_off(53 + (int32_t)k + 12 * set.octave);
+    ed_load(set.slot);
+    ed.on = 1;
+    ed.del_at = 0;
+    ed_slot_say("EDIT");
+}
+
+static void ed_close(void)
+{
+    plat_lights_mid(0u, 0u);                  /* (the rows' lights: the middle level stays until it is cleared) */
+    ed.on = 0;
+    ed.drop_armed = 0;
+    ui.redraw = 1;
+}
+
+static void ed_changed(void)
+{
+    ed.dirty = 1;
+    ed.drop_armed = 0;
+    ui.redraw = 1;
+}
+
+static void ed_insert(char c)
+{
+    uint32_t i;
+    if (ed.n >= ED_MAX) {
+        app_say("EDIT", "FULL");
+        return;
+    }
+    for (i = ed.n; i > ed.cur; i--)
+        ed.t[i] = ed.t[i - 1];
+    ed.t[ed.cur++] = c;
+    ed.t[++ed.n] = 0;
+    ed_changed();
+    if (ann_on()) {                           /* a screen reader hears the letter */
+        char s[2] = {(char)(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c), 0};
+        ann_say(c == ' ' ? "SPACE" : s, 0, ANN_NOW);
+    }
+}
+
+static void ed_delete(int before)             /* the character before the cursor (1), or after it (0) */
+{
+    uint32_t i;
+    if (before ? !ed.cur : ed.cur >= ed.n)
+        return;
+    if (before)
+        ed.cur--;
+    for (i = ed.cur; i < ed.n; i++)
+        ed.t[i] = ed.t[i + 1];
+    ed.n--;
+    ed_changed();
+}
+
+static void ed_cycle(int32_t e)               /* K2: the character before the cursor through ED_CHARS */
+{
+    const int32_t m = (int32_t)sizeof ED_CHARS - 1;
+    int32_t i = 0;
+    char c;
+    if (!ed.cur)
+        return;
+    c = ed.t[ed.cur - 1];
+    if (c >= 'A' && c <= 'Z')
+        c = (char)(c - 'A' + 'a');
+    while (i < m && ED_CHARS[i] != c)
+        i++;
+    if (i == m)
+        i = 0;
+    ed.t[ed.cur - 1] = ED_CHARS[((i + e) % m + m) % m];
+    ed_changed();
+}
+
+/* the document again with slot `slot` as t (n bytes; none: the slot goes), the other slots and the pronunciations as
+ * they were; saved, then sung from. 0, -1 too long, -2 the flash refused it */
+static int words_put(int slot, const char *t, uint32_t n)
+{
+    uint32_t k = 0, i, len;
+    const char *s;
+#define WPUT(c) do { if (k >= WORDS_MAX) return -1; words_rx[k++] = (c); } while (0)
+    for (s = "VOCALWORDS 1\n"; *s; s++)
+        WPUT(*s);
+    for (i = 0; i < WORDS_SLOTS; i++) {
+        s = (int)i == slot ? t : slot_text[i];
+        len = (int)i == slot ? n : slot_len[i];
+        if (!s || !len)
+            continue;
+        WPUT((char)('1' + i));
+        WPUT(' ');
+        while (len--)
+            WPUT(*s++);
+        WPUT('\n');
+    }
+    for (i = 0; i < (uint32_t)n_pron; i++) {
+        WPUT('@');
+        for (s = pron[i]; *s && *s != '\n'; s++)
+            WPUT(*s);
+        WPUT('\n');
+    }
+#undef WPUT
+    rx_len = rx_got = 0;                      /* (a Studio upload in progress is dropped: it begins again) */
+    if (plat_store_save(OBJ_WORDS, words_rx, k) != 0)
+        return -2;
+    memcpy(words_doc, words_rx, k);
+    words_len = k;
+    words_doc[k] = 0;
+    words_index();
+    return 0;
+}
+
+static void ed_save(void)
+{
+    uint32_t a = 0, b = ed.n;
+    int r;
+    while (a < b && ed.t[a] == ' ')           /* without the spaces around */
+        a++;
+    while (b > a && ed.t[b - 1] == ' ')
+        b--;
+    r = words_put(ed.slot, ed.t + a, b - a);
+    if (r) {
+        app_say("SAVE", r == -1 ? "TOO LONG" : "FAILED");
+        return;
+    }
+    words_select(ed.slot);                    /* (an emptied slot: the first with words) */
+    set_dirty = 1;
+    ed_close();
+    ed_slot_say("SAVED");
+}
+
+static void ed_leave(void)
+{
+    if (ed.dirty && !ed.drop_armed) {
+        ed.drop_armed = 1;
+        app_say("UNSAVED", "AGAIN: DROP");
+        return;
+    }
+    if (ed.dirty)
+        app_say("CHANGES", "DROPPED");
+    else
+        ed_slot_say("WORDS");
+    ed_close();
+}
+
+/* the editor's input: the keys type, the buttons and knobs edit (input() hands everything here while it is open) */
+static void ed_input(uint32_t keys, uint32_t btn, uint32_t now)
+{
+    uint32_t k;
+    int32_t e;
+    for (k = 0; k < NKEYS; k++)
+        if ((keys >> k & 1u) && !(ui.keys >> k & 1u))
+            ed_insert(ed_key_char(k));
+    for (k = 0; k < NB; k++) {
+        uint32_t bit = 1u << k;
+        if (!(btn & bit) || (ui.btn & bit))
+            continue;
+        if (k == B_OCTDN) {
+            ed_delete(1);
+            ed.del_at = now;
+        } else if (k == B_OCTUP) {
+            ed_delete(0);
+        } else if (k == B_PLAY) {             /* try the words as typed */
+            mode_set(0);
+            speak_text(ed.t);
+            ed_slot_say("SPEAKING");
+        } else if (k == B_SAVE) {
+            ed_save();
+        } else if (k == B_FX) {               /* the keys' layout: A-Z or QWERTY, kept at once */
+            set.kb = (uint8_t)!set.kb;
+            plat_store_save(OBJ_SETTINGS, &set, sizeof set);
+            app_say("KEYS", set.kb ? "QWERTY" : "A TO Z");
+        } else if (k == B_EDIT || k == B_HOME) {
+            ed_leave();
+        }
+    }
+    if (!(btn >> B_OCTDN & 1u))
+        ed.del_at = 0;
+    else if (ed.del_at && now - ed.del_at >= 450u) {   /* OCT- held: a character every 70 ms */
+        ed_delete(1);
+        ed.del_at = now - 380u;
+    }
+    for (k = 0; k < NE; k++) {
+        if ((e = plat_enc((int)k)) == 0)
+            continue;
+        ui.turns[k] += e;
+        ui.turned_at[k] = now;
+        if (k == EN_K1) {
+            ed.cur = (uint8_t)clamp((int32_t)ed.cur + e, 0, ed.n);
+            ui.redraw = 1;
+        } else if (k == EN_K2) {
+            ed_cycle(e);
+        } else if (k == EN_PRESET) {          /* another slot (its words, empty or not) */
+            if (ed.dirty) {
+                app_say("SAVE FIRST", "OR LEAVE");
+            } else {
+                ed_load(((ed.slot + e) % WORDS_SLOTS + WORDS_SLOTS) % WORDS_SLOTS);
+                ed_slot_say("EDIT");
+            }
+        }
+    }
+    if (keys != ui.keys || btn != ui.btn)
+        ui.redraw = 1;
+    ui.keys = keys;
+    ui.btn = btn;
+    {   /* the lights as plat_leds gives them (PLAY green, the unlit buttons glowing), and in QWERTY the rows' first
+         * keys (Q, A, Z) and the space at the middle level (brighter than the glow), to find the rows by */
+        uint32_t b = btn | 1u << B_EDIT | (ed.dirty ? 1u << B_SAVE : 0u), play = 1u << B_PLAY;
+        uint32_t dim = ((1u << NB) - 1u) & ~b, lit = keys | midi_keys(set.octave);
+        b = (b & ~play) | (b & play ? LED_PLAY_GREEN : 0u);
+        dim = (dim & ~play) | (dim & play ? LED_PLAY_GREEN : 0u);
+        plat_glow(1);
+        plat_lights(b, lit, dim, 0u, 2);
+        plat_lights_mid(0u, ed.on && set.kb ? ed_row_keys() & ~lit : 0u);   /* (none once this pass left the editor) */
+    }
+}
+
 static void input(void)
 {
     static uint32_t snap_mask;               /* keys pressed with FX held: snapshots, not notes */
@@ -1305,6 +1630,10 @@ static void input(void)
     mb_post();                               /* what is pending, if the mailbox has been emptied */
     touch_poll();                            /* the sensed keys' presses, velocities and pressure */
     keys = touch_keys();
+    if (ed.on) {                             /* the word editor: the keys type */
+        ed_input(keys, btn, now);
+        return;
+    }
     for (k = 0; k < NKEYS; k++) {            /* key 0 is F3 (MIDI 53) */
         uint32_t bit = 1u << k, v;
         int32_t note = 53 + (int32_t)k + 12 * set.octave;
@@ -1369,9 +1698,11 @@ static void input(void)
         else if (k == B_HOME) {                  /* WORDS, page 1 */
             mode_set(0);
             page = 0;
-        } else if (k == B_EDIT) {                /* pages 2-5 */
+        } else if (k == B_SEL) {                 /* pages 2-5 (EDIT until 0.5.0) */
             page = (uint8_t)(page >= 1 && page < 4 ? page + 1 : 1);
             app_say(PAGE_NAME[page], "");
+        } else if (k == B_EDIT) {                /* the word editor, on the slot sung (from the next input) */
+            ed_open();
         } else if (k == B_REC && FM1B_BLE)
             ui.rec_t = plat_ms();                /* a press: on release (a hold switches Bluetooth) */
         else if (k == B_GLO) {                 /* the debug page (the timings) / the flat view */
@@ -1423,10 +1754,8 @@ static void input(void)
             const int n = vowel_mode ? NPAGES : NPAGES - 1;
             page = (uint8_t)((((int)page + e) % n + n) % n);
             app_say(PAGE_NAME[page], "");
-        } else if (k == EN_ALGO) {               /* Bright, always */
-            knob_turn(K_BRIGHT, e);
-            knob_text(K_BRIGHT, t);
-            app_say("BRIGHT", t);
+        } else if (k == EN_ALGO) {               /* Body, always (male only for now) */
+            knob_turn(K_BODY, e);
         } else if (k == EN_PRESET && home_held) {   /* HOME + PRESET: the word slot */
             int i = set.slot, step = e > 0 ? 1 : -1, tries;
             char nm[8] = "WORDS ";
@@ -1452,6 +1781,14 @@ static void input(void)
         } else if (k >= EN_K1 && k <= EN_K4) {   /* the page's four values */
             knob_turn(PAGE[page][k - EN_K1], e);
         }
+    }
+    if (body_pending >= 0 && now - body_turned_at >= 400u) {   /* ALGORITHM at rest: the body switches */
+        kv[K_BODY] = (float)body_pending;
+        body_pending = -1;
+        set_dirty = 1;
+        body_apply();
+        vp_send();
+        ui.redraw = 1;
     }
     if (preset_pending >= 0 && now - preset_turned_at >= 400u) {
         preset_apply(preset_pending);
@@ -1657,11 +1994,17 @@ static uint8_t head_ready;
 #define HOME_TOP 24
 #define HOME_HEAD_H 152
 
-static void home_init(void)
+static void home_body(void)                  /* the drawn head's anatomy: the body's */
 {
-    vm_tract_setup(&dtract);
+    body_tract_setup(&dtract, body_cur);
     dtract.draw = 1;
     head_ready = 0;
+    ui.redraw = 1;
+}
+
+static void home_init(void)
+{
+    home_body();
 }
 
 /* the head again if the voice's articulation moved (1: it was) */
@@ -1738,8 +2081,12 @@ static void draw_home(void)
             cv_text(232 - text_w(&FONT_B, t), 4, &FONT_B, t, V_BLUE);
         } else {
             char pn[16] = {'P', (char)('1' + set.preset), ' ', 0};
+            int32_t px;
             text_cat(pn, PRESET_NAME[set.preset]);
-            cv_text(232 - text_w(&FONT_XS, pn), 7, &FONT_XS, pn, V_BLUE_MID);
+            px = 232 - text_w(&FONT_XS, pn);
+            cv_text(px, 7, &FONT_XS, pn, V_BLUE_MID);
+            /* the body (ALGORITHM), before the preset */
+            cv_text(px - 8 - text_w(&FONT_XS, CH_BODIES[body_cur].name), 7, &FONT_XS, CH_BODIES[body_cur].name, V_BLUE_DIM);
         }
     }
     cv_rect(8, HOME_TOP - 1, 224, 1, RGB(0x13, 0x39, 0x54));
@@ -1810,9 +2157,148 @@ static void draw_home(void)
     cv_blit(0, (uint32_t)(HOME_TOP + HOME_HEAD_H));
 }
 
+/* ------------------------------------------------------------- the editor's page --- */
+/* the words as typed (wrapped, the cursor green), the keyboard with each key's letter (lit while held), the controls */
+#define ED_TOP 24
+#define ED_LINE_H 22
+#define ED_LINES 5
+#define ED_KB_Y 144
+static uint8_t ed_wrap(uint8_t *start)        /* the lines' starts (word wrap at 224 px, FONT_B, upper case) */
+{
+    uint8_t nl = 1, i, sp = 0;
+    int32_t w = 0;
+    start[0] = 0;
+    for (i = 0; i < ed.n && nl < 16; i++) {
+        char c[2] = {(char)(ed.t[i] >= 'a' && ed.t[i] <= 'z' ? ed.t[i] - 'a' + 'A' : ed.t[i]), 0};
+        int32_t cw = text_w(&FONT_B, c);
+        if (ed.t[i] == ' ')
+            sp = (uint8_t)(i + 1);
+        if (w + cw > 224 && i > start[nl - 1]) {
+            uint8_t b = sp > start[nl - 1] ? sp : i;   /* after the last space, else here */
+            uint8_t j;
+            start[nl++] = b;
+            w = 0;
+            for (j = b; j < i; j++) {
+                char d[2] = {(char)(ed.t[j] >= 'a' && ed.t[j] <= 'z' ? ed.t[j] - 'a' + 'A' : ed.t[j]), 0};
+                w += text_w(&FONT_B, d);
+            }
+        }
+        w += cw;
+    }
+    return nl;
+}
+
+static void ed_text_strip(int32_t y0, int32_t h, const uint8_t *start, uint8_t nl, uint8_t first)
+{
+    uint8_t l;
+    cv_begin(240, (uint32_t)h, C_BLACK);
+    if (!ed.n)
+        cv_text(8, ED_TOP + 8 - y0, &FONT_XS, "EMPTY: TYPE ON THE KEYS", V_BLUE_DIM);
+    for (l = first; l < nl && l < first + ED_LINES; l++) {
+        uint8_t a = start[l], b = l + 1 < nl ? start[l + 1] : ed.n, i;
+        int32_t y = ED_TOP + 6 + (l - first) * ED_LINE_H - y0, x = 8;
+        for (i = a; i <= b; i++) {
+            if (i == ed.cur && (i < b || l + 1 == nl || ed.cur == ed.n))
+                cv_rect(x, y - 1, 2, 20, V_GREEN);
+            if (i < b) {
+                char c[2] = {(char)(ed.t[i] >= 'a' && ed.t[i] <= 'z' ? ed.t[i] - 'a' + 'A' : ed.t[i]), 0};
+                x = cv_text(x + (i == ed.cur ? 3 : 0), y, &FONT_B, c, V_WHITE);
+            }
+        }
+    }
+    cv_blit(0, (uint32_t)y0);
+}
+
+static void draw_edit(void)
+{
+    static const uint8_t WK[16] = PLAT_WHITE_KEYS, BK[11] = PLAT_BLACK_KEYS;
+    static const uint8_t AT[11] = {0, 1, 2, 4, 5, 7, 8, 9, 11, 12, 14};   /* the white key each black one follows */
+    uint8_t start[16], nl, cl = 0, first = 0, i;
+    char t[24];
+    int32_t x;
+    /* the header: the slot and the length (or a message for a moment) */
+    cv_begin(240, ED_TOP, C_BLACK);
+    if (plat_ms() < ui.msg_until) {
+        x = cv_text(8, 4, &FONT_B, ui.msg[0], V_WHITE);
+        cv_text(x + 8, 4, &FONT_B, ui.msg[1], V_BLUE);
+    } else {
+        t[0] = 0;
+        x = cv_text(8, 7, &FONT_XS, "EDIT", V_BLUE);
+        {
+            char w[8] = "WORDS ";
+            w[6] = (char)('1' + ed.slot);
+            w[7] = 0;
+            x = cv_text(x + 8, 7, &FONT_XS, w, V_WHITE);
+        }
+        if (ed.dirty)
+            cv_text(x + 10, 7, &FONT_XS, "UNSAVED", RGB(0xff, 0xb3, 0x40));
+        int_text(ed.n, t);
+        text_cat(t, "/150");
+        x = cv_text(232 - text_w(&FONT_XS, t), 7, &FONT_XS, t, V_BLUE_MID);
+        {   /* the keys' layout, before the count */
+            const char *lay = set.kb ? "QWERTY" : "A-Z";
+            cv_text(232 - text_w(&FONT_XS, t) - 8 - text_w(&FONT_XS, lay), 7, &FONT_XS, lay, V_BLUE_DIM);
+        }
+    }
+    cv_rect(8, ED_TOP - 1, 224, 1, RGB(0x13, 0x39, 0x54));
+    cv_blit(0, 0);
+    /* the words: the lines around the cursor */
+    nl = ed_wrap(start);
+    for (i = 0; i < nl; i++)
+        if (ed.cur >= start[i])
+            cl = i;
+    if (cl >= ED_LINES)
+        first = (uint8_t)(cl - ED_LINES + 1);
+    ed_text_strip(ED_TOP, 60, start, nl, first);
+    ed_text_strip(ED_TOP + 60, ED_KB_Y - ED_TOP - 60, start, nl, first);
+    /* the keyboard: each key's letter, lit while held */
+    cv_begin(240, 56, C_BLACK);
+    cv_rect(8, 0, 224, 1, RGB(0x13, 0x39, 0x54));
+    for (i = 0; i < 16; i++) {
+        const uint32_t k = WK[i];
+        const int on = (int)(ui.keys >> k & 1u);
+        const char ch = ed_key_char(k);
+        char c[3] = {ch == ' ' ? 'S' : (char)(ch - 'a' + 'A'), ch == ' ' ? 'P' : 0, 0};
+        cv_rect(8 + i * 14, 8, 13, 44, on ? V_GREEN : RGB(0x0b, 0x22, 0x33));
+        cv_text(8 + i * 14 + (13 - text_w(&FONT_XS, c)) / 2, 36, &FONT_XS, c,
+                on ? C_BLACK : set.kb && (ed_row_keys() >> k & 1u) ? V_GREEN : V_BLUE);   /* (a row's start: green) */
+    }
+    for (i = 0; i < 11; i++) {
+        const uint32_t k = BK[i];
+        const int on = (int)(ui.keys >> k & 1u);
+        const char ch = ed_key_char(k);
+        char c[2] = {ch == ' ' ? '_' : (char)(ch - 'a' + 'A'), 0};
+        int32_t bx = 8 + AT[i] * 14 + 8;
+        cv_rect(bx - 1, 7, 13, 25, C_BLACK);
+        cv_rect(bx, 8, 11, 23, on ? V_GREEN : V_BLUE_DIM);
+        cv_text(bx + (11 - text_w(&FONT_XS, c)) / 2, 13, &FONT_XS, c,
+                on ? C_BLACK : set.kb && (ed_row_keys() >> k & 1u) ? V_GREEN : V_WHITE);
+    }
+    cv_blit(0, ED_KB_Y);
+    /* the controls, the knobs in their colours */
+    cv_begin(240, 240 - ED_KB_Y - 56, C_BLACK);
+    x = cv_text(8, 4, &FONT_XS, "K1", V_GREEN);
+    x = cv_text(x + 4, 4, &FONT_XS, "MOVE", V_BLUE_MID);
+    x = cv_text(x + 10, 4, &FONT_XS, "K2", V_RED);
+    x = cv_text(x + 4, 4, &FONT_XS, ", . ?", V_BLUE_MID);
+    x = cv_text(x + 10, 4, &FONT_XS, "OCT-", V_WHITE);
+    x = cv_text(x + 4, 4, &FONT_XS, "DEL", V_BLUE_MID);
+    x = cv_text(x + 10, 4, &FONT_XS, "FX", V_WHITE);
+    cv_text(x + 4, 4, &FONT_XS, set.kb ? "A-Z" : "QWERTY", V_BLUE_MID);
+    x = cv_text(8, 20, &FONT_XS, "PLAY", V_WHITE);
+    x = cv_text(x + 4, 20, &FONT_XS, "TRY", V_BLUE_MID);
+    x = cv_text(x + 10, 20, &FONT_XS, "SAVE", V_WHITE);
+    x = cv_text(x + 4, 20, &FONT_XS, "KEEP", V_BLUE_MID);
+    x = cv_text(x + 10, 20, &FONT_XS, "EDIT", V_WHITE);
+    cv_text(x + 4, 20, &FONT_XS, "LEAVE", V_BLUE_MID);
+    cv_blit(0, ED_KB_Y + 56);
+}
+
 static void draw(void)
 {
-    if (page_debug)
+    if (ed.on)
+        draw_edit();
+    else if (page_debug)
         draw_debug();
     else
         draw_home();
@@ -1876,7 +2362,7 @@ void app_frame(void)
     }
     if (stat_update() && page_debug)
         ui.redraw = 1;
-    if (!page_debug && home_head_update())   /* the voice moved: the head again */
+    if (!page_debug && !ed.on && home_head_update())   /* the voice moved: the head again */
         ui.redraw = 1;
     {
         static uint8_t was_speaking;
@@ -1914,6 +2400,28 @@ int app_expect(const char *what, int *got)
         *got = ui.vel[ui.last_key];
     else if (!strcmp(what, "prs"))
         *got = ui.prs[ui.last_key];
+    else if (!strcmp(what, "edit"))          /* the word editor: open, its length, its cursor */
+        *got = ed.on;
+    else if (!strcmp(what, "edlen"))
+        *got = ed.n;
+    else if (!strcmp(what, "edcur"))
+        *got = ed.cur;
+    else if (!strcmp(what, "edchar"))        /* the character before the cursor (its code; 0 at the start) */
+        *got = ed.cur ? (uint8_t)ed.t[ed.cur - 1] : 0;
+    else if (!strcmp(what, "body"))          /* the body: the main loop's, and the audio's */
+        *got = body_cur;
+    else if (!strcmp(what, "body_audio"))
+        *got = body_audio;
+    else if (!strcmp(what, "f1x"))           /* the vowel pad's F1 at OPEN 0.5, Hz */
+        *got = (int)(pad_f1(0.5f) + 0.5f);
+    else if (!strcmp(what, "kb"))
+        *got = set.kb;
+    else if (!strcmp(what, "slot"))
+        *got = set.slot;
+    else if (!strcmp(what, "page"))
+        *got = page;
+    else if (!strncmp(what, "slotlen", 7))  /* slotlenN: slot N's length (0-based; 0: empty) */
+        *got = slot_text[atoi(what + 7) % WORDS_SLOTS] ? slot_len[atoi(what + 7) % WORDS_SLOTS] : 0;
     else if (!strncmp(what, "turns", 5))    /* turnsN: encoder N's count (plat.h EN_*) */
         *got = ui.turns[atoi(what + 5) % NE];
     else
