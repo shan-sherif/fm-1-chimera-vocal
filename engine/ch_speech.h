@@ -71,6 +71,9 @@ extern int ch_lts_device;
 /* the body whose calibrated phonemes and vowels the front end, the planner and the vowel pad use: 0 the adult male
  * (the start), 1 the adult female, 2 the child (CHIMERA's BodyMix presets) */
 void ch_speech_body(int body);
+/* the built-in pronunciation list's words (ch_dict_data.h, ~480 common English words), by index 0..count-1 */
+int ch_dict_count(void);
+const char *ch_dict_word(int i);
 int ch_arpabet(const char *phones, ch_seg_t *out, int cap);
 
 void ch_plan_defaults(ch_plan_opts_t *o);

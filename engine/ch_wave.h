@@ -57,6 +57,7 @@ typedef struct {
     ch_real fade, fade_n;
     /* the junction where the nose joins: its three weights 2A/sum(A), ramped */
     ch_real w1, w2, w3, dw1, dw2, dw3;
+    ch_real nk1_d;                          /* the velum port's junction (nsec[1].k): its ramp, as the tract's */
     ch_real r_lip, r_nose, r_glottis;      /* (r_lip, r_nose: the radiation load's reflection when rad_load is 0) */
     /* the radiation load at the lips [0] and the nostrils [1]: CHIMERA's (Flanagan's) parallel R-L against the end
      * section's characteristic impedance, as a reflection filter refl = (b0 + b1 z^-1) / (1 + a1 z^-1) (bilinear),
@@ -70,6 +71,7 @@ typedef struct {
     uint8_t n_jet;
     int16_t jet_m[8];
     ch_real jet_kf[8], jet_kb[8], jet_u[8];
+    ch_real jet_dkf[8], jet_dkb[8];         /* their ramps over the control step, from the areas then to the target's */
     /* the yielding walls, lumped: CHIMERA's soft-tissue mass, resistance and stiffness per cm² over the tract's wall
      * area, moved by the pressure above the glottis; their motion draws air (the voice bar through a closure) and a
      * quarter of it radiates (CHIMERA's wall_radiation) */

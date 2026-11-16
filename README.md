@@ -50,7 +50,9 @@ Firmware for the M-VAVE FM-1 that does one thing: a simulated human voice. Every
   them on an emulated FM-1 in the browser, and sends them to yours over USB.
 - **Typing on the FM-1:** EDIT opens a word editor, a letter a key (A-Z or QWERTY in two rows), for the same eight
   slots.
-- **MIDI in** plays the voice as the keys do, and lights the keys its notes fall on.
+- **MIDI in** plays the voice as the keys do, and lights the keys its notes fall on. From a MIDI controller,
+  aftertouch deepens the vibrato (as pressing harder on a key does), the **mod wheel** (CC1) adds breath, and
+  **pitch bend** bends ±2 semitones ([the manual](app/docs/MANUAL.md#playing-from-a-midi-controller)).
 
 The [manual](app/docs/MANUAL.md) has the keys, buttons and knobs in full.
 
@@ -59,12 +61,10 @@ recorder and the browser audio chain. The FM-1 gets its own small interface.
 
 ## Status
 
-**0.5.0** (the package identity is `FM-1_042` for every version; releases add the version, `FM-1_042000500`).
-0.4.0 was the first launch; 0.4.1 lit the keys for the notes MIDI in plays; 0.5.0 adds typing words on the FM-1
-(EDIT opens the word editor, a letter a key; the knob pages moved to SEL), CHIMERA's female and child bodies on
-ALGORITHM (Bright moved to page 5), and carries fm1-base in this repository
-([Based on fm1-base](#based-on-fm1-base)). CHIMERA's front end, planner and control are ported to C and checked against
-CHIMERA itself (the lab: identical gestures). Words come from the Studio or are typed on the FM-1.
+Working and released: see the [releases](https://github.com/shan-sherif/fm-1-chimera-vocal/releases) for each
+version, what changed in it, and its files. The package identity is `FM-1_042` (a release adds its version to it).
+CHIMERA's front end, planner and control are ported to C and checked against CHIMERA itself (the lab: identical
+gestures). Words come from the Studio or are typed on the FM-1.
 
 ## To do
 
@@ -73,13 +73,12 @@ CHIMERA itself (the lab: identical gestures). Words come from the Studio or are 
   calibrated phoneme and vowel targets by weight (`ArticPatch::blend`). The waveguide is the same size for every body,
   so no airway builder is needed and switching costs what it does now. Worth exploring for more varied voices if
   shifting pitch outside the FM-1 (an external pitch or formant shifter) doesn't already give enough variety.
-- **The child's upper formants:** the child's shorter tract follows CHIMERA a little less closely above 1 kHz than
-  the male's and female's (the waveguide's lengths rounding to whole samples), still clearly a child.
 - **Sharper consonants:** a faster anatomy (more of it in RAM, skipped while the tongue is still) so it can run every
   2nd control step (`ANAT_EVERY` in `app/app.c`; every 4th now).
-- **Expression:** the keys' pressure and MIDI's mod wheel and pitch bend (vibrato, breath).
 - **The beatbox** (CHIMERA's, on SEQ, with a 2D view).
-- **A random word generator:** fill a word slot with random words to sing, for ideas and happy accidents.
+- **CHIMERA's tunes:** its Sing mode's melodies (Dreamy, Joyful, Somber, Playful, Gentle, Twinkle; `src/song/tunes.ts`),
+  with its fitting of the words to them (`src/song/fit.ts`): the FM-1 would sing a word slot on a chosen tune by
+  itself (a button held with PLAY, say), in the current preset and body.
 
 ## Two cores
 
@@ -130,7 +129,7 @@ Studio, SAVE on a preset, then a power cycle).
 
 ## Based on fm1-base
 
-The platform under the app, copied into this repository in 0.5.0 (2026-11-16; a git submodule until then), so it can
+The platform under the app, copied into this repository on 2026-11-16 (a git submodule until then), so it can
 be changed here. Its files keep their MPL-2.0 headers and their authors' notices (`base/LICENSE`, `base/LICENSING.md`,
 `base/CREDITS.md`); changes made here to them are MPL-2.0 too. What this firmware does not use was left out: fm1-base's
 `template/`, `examples/` and `skill/`, felucca-bsp's `examples/`, and their GitHub workflows. Upstream fixes are carried
@@ -170,8 +169,10 @@ On GitHub, `.github/workflows/pages.yml` builds the same site on every push to `
 from gitee, Emscripten, CHIMERA's dictionary at a fixed commit) and deploys it to GitHub Pages; the release is the
 `version` line in `app/fm1.toml`.
 
-The simulator's tests (`app/tests/`): `silence`, `rest`, `words`, `pages`, `studio` (the Studio's SysEx), `stress` (three
-minutes of random playing; it went silent before 0.0.9's fix).
+The simulator's tests (`app/tests/`): `silence`, `rest`, `words`, `pages`, `screens`, `studio` (the Studio's SysEx),
+`edit` (the word editor), `bodies` (male, female, child), `expression` (pressure, aftertouch, mod wheel, pitch bend),
+`crack` (no crack where a nasal ends a word),
+`stress` (three minutes of random playing).
 
 ## The lab
 
@@ -194,7 +195,8 @@ minutes of random playing; it went silent before 0.0.9's fix).
   phonemes and vowels.
 - `cargo run --release -- phonemes > ../engine/ch_phon_data.h` writes CHIMERA's phoneme and vowel tables;
   `tools/gen_dict.py tools/common_words.txt ../external/chimera-vocal-synth/public/data/cmudict.txt.gz > ../engine/ch_dict_data.h`
-  the built-in pronunciations; `tools/gen_words_default.py` the first word slots (`app/dsp/words_default.h`).
+  the built-in pronunciations; `tools/gen_words_default.py` the first word slots (`app/dsp/words_default.h`);
+  `tools/gen_random_words.py` the Studio's random words (`app/web/random_words.txt`, from SCOWL's release).
 - `cargo run --release -- fronttest`, then `out/front_test` (and `out/front_test_fm1`, the FM-1's maths) checks the C
   front end against CHIMERA's: the letter-to-sound rules on every dictionary word, texts to phrases to gestures,
   lyrics to syllables, live note on/off.
@@ -212,7 +214,7 @@ fm-1-midi-mania and fm1-base. Of these only CHIMERA's code is ported here; the o
 See [LICENSE](LICENSE): the port of CHIMERA's voice (`engine/`, `app/dsp/voice_male.h`, `app/dsp/voice_bodies.h`) is MIT, keeping Jameson
 Hodge's copyright; the files started from fm1-base's template (`app/app.c`, `app/app.h`) are MPL-2.0; this project's own
 files (the Studio, the site, the tools, the lab) are MIT, Shan-Sherif; the CMUdict entries are under CMU's BSD-style
-licence. The full texts are in [LICENSES/](LICENSES/). The firmware package is MPL-2.0 AND MIT, with the JieLi SDK's
+licence; the Studio's random words (`app/web/random_words.txt`) are from SCOWL, under its permissive notice. The full texts are in [LICENSES/](LICENSES/). The firmware package is MPL-2.0 AND MIT, with the JieLi SDK's
 files under Apache-2.0.
 
 ## Credits
@@ -237,4 +239,6 @@ files under Apache-2.0.
 - **Saadet** (Kerem Kilic, Ellic Studio) and **Midi-Mania** (Shan-Sherif): FM-1 firmwares studied for this port.
 - **CMU Pronouncing Dictionary**, Carnegie Mellon University (BSD-style): the ~480 built-in pronunciations
   (`engine/ch_dict_data.h`) and the Studio's dictionary.
+- **SCOWL** (Spell Checker Oriented Word Lists), Kevin Atkinson, from the public-domain Moby Words and Brian Kelk's
+  frequency list ([LICENSES/SCOWL.txt](LICENSES/SCOWL.txt)): the everyday words the Studio's Random picks from.
 - **Barlow** (The Barlow Project Authors, SIL OFL 1.1): the screen's fonts, through fm1-base.

@@ -266,6 +266,10 @@ def add_studio(out, version):
     data = ROOT / "external" / "chimera-vocal-synth" / "public" / "data"
     for f in ("cmudict.txt.gz", "CMUDICT-LICENSE.txt"):
         shutil.copyfile(data / f, d / f)
+    # the slots' Random words (SCOWL's common words with a CMUdict pronunciation: lab/tools/gen_random_words.py), and
+    # SCOWL's notice beside them
+    shutil.copyfile(APP / "web" / "random_words.txt", d / "random_words.txt")
+    shutil.copyfile(ROOT / "LICENSES" / "SCOWL.txt", d / "SCOWL-LICENSE.txt")
     index = out / "index.html"
     html = index.read_text(encoding="utf-8")
     li = ('<li>The <a href="studio/">Studio</a> prepares the words the FM-1 sings, with the pronouncing dictionary, '

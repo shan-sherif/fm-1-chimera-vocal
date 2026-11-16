@@ -164,3 +164,25 @@ expect edchar 32
 tap EDIT
 tap EDIT
 expect edit 0
+# ARP in the editor: a random line of the built-in words (3 to 6), unsaved until SAVE; another press, another line
+tap EDIT
+wait 50
+listen
+tap ARP
+said RANDOM
+expect edlen >6
+expect edcur >6
+tap ARP
+tap ARP
+wait 100
+shot edit-random.png
+tap SAVE
+wait 50
+expect edit 0
+expect slot 1
+expect slotlen1 >6
+key 7 down
+wait 300
+expect note 60
+key 7 up
+wait 200

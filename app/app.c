@@ -42,6 +42,14 @@ static uint8_t set_dirty;                /* changed since the last save: SAVE is
 /* the words: the slots the Studio sends (below, "words"); CHIMERA's presets until it has (lab/tools/gen_words_default.py) */
 #include "words_default.h"
 static uint8_t body_cur;                     /* main loop: the body (0 male, 1 female, 2 child; CH_BODIES) */
+/* the waveguide's loss a section, by body (0.6.0): the child's smaller tract loses more to its walls than the male's
+ * setting gives; tuned against CHIMERA's renders of each body (lab/port/replay --wave, CH_WAVE_FADE: the child's
+ * spectrum's mean difference 6.0 -> 5.5 dB, its 90th percentile 11.2 -> 8.2 dB; the male's and the female's best at
+ * the setting they had) */
+static const float BODY_FADE[3] = {0.995f, 0.995f, 0.98f};
+/* and its level after: the child's more loss makes it 4.6 dB quieter than CHIMERA's child (it was 1.1 dB louder);
+ * +4.5 dB puts it back in line (the lab's level against CHIMERA's render) */
+static const float BODY_GAIN[3] = {1.0f, 1.0f, 1.68f};
 static volatile uint8_t body_req, body_audio; /* the body asked for, and the one the audio has (it switches at a block) */
 #define SPEECH_F0 (CH_BODIES[body_cur].f0)   /* the body's speaking pitch (lab record: CHIMERA's render) */
 
@@ -121,6 +129,16 @@ static void words_load(void);
 static void words_select(int i);
 
 /* the first core: one control step (HumanVoice::control: ch_control.c) */
+/* expression (0.6.0): a held key's pressure, or MIDI in's aftertouch, deepens the vibrato; MIDI in's pitch bend bends
+ * the pitch +-2 semitones; its mod wheel (CC1) adds breath (vp_send). The main loop and MIDI in set the targets, the
+ * control step glides to them (no steps in the sound) and adds them to what the glottis is told */
+#define EXPR_VIB_CENTS 50.0f                 /* full pressure: this much more vibrato (cents) */
+#define EXPR_BEND_SEMIS 2.0f
+static volatile float xvib_target, xbend_target = 1.0f;   /* cents; the pitch's ratio */
+static float xvib_now, xbend_now = 1.0f;     /* (the audio interrupt's) */
+static volatile uint8_t midi_prs, midi_mod;  /* MIDI in: the last aftertouch, the mod wheel (0..127) */
+static volatile int16_t midi_bend;           /* MIDI in: the pitch bend, -8192..8191 */
+
 static void control_step(step_t *d)
 {
     ctl.anat_every = anat_every;
@@ -130,6 +148,10 @@ static void control_step(step_t *d)
         d->steps = (uint8_t)ctl.anat_every;
     }
     d->g = ctl.glottis;
+    xvib_now += (xvib_target - xvib_now) * 0.05f;    /* ~30 ms */
+    xbend_now += (xbend_target - xbend_now) * 0.25f; /* ~5 ms: a bend follows the wheel closely */
+    d->g.vibrato_depth += xvib_now;
+    d->g.f0 *= xbend_now;
     d->p_lung = ctl.p_lung;
 }
 
@@ -159,6 +181,7 @@ static void voice_init(void)
     ctl.defer_contacts = 1;                  /* no second anatomy run after a contact correction (lab: same sound) */
     ch_tract_apply(&tract, ctl.x, 0.0f);     /* (unslewed, as HumanVoice::new) */
     ch_wave_init(&wave, (float)VM_FS, VM_CTRL, tract.k, tract.lip_s);
+    wave.fade = BODY_FADE[0];
     for (s = 0; s < NSUB; s++)
         control_step(&steps[0][s]);
     cur = 0;
@@ -320,6 +343,14 @@ static void midi_in(void)                    /* audio interrupt: the packets tha
             nq_push(d1, d2);
         else if ((st & 0xF0u) == 0x80u || (st & 0xF0u) == 0x90u)
             nq_push(d1, 0);
+        else if ((st & 0xF0u) == 0xE0u)          /* pitch bend */
+            midi_bend = (int16_t)((int32_t)(d1 | (d2 & 0x7Fu) << 7) - 8192);
+        else if ((st & 0xF0u) == 0xB0u && d1 == 1u)   /* the mod wheel */
+            midi_mod = (uint8_t)(d2 & 0x7Fu);
+        else if ((st & 0xF0u) == 0xD0u)          /* channel pressure */
+            midi_prs = (uint8_t)d1;
+        else if ((st & 0xF0u) == 0xA0u)          /* poly aftertouch (the voice is one: the last one counts) */
+            midi_prs = (uint8_t)(d2 & 0x7Fu);
     }
 }
 
@@ -327,7 +358,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
 {
     uint32_t i, t0, c0;
     int s;
-    float gain = (float)master_q12 / 4096.0f * 8300000.0f;   /* MASTER, read once a block */
+    float gain = (float)master_q12 / 4096.0f * 8300000.0f * BODY_GAIN[body_audio];   /* MASTER, read once a block */
     int on2;
     midi_in();
     mb_take();
@@ -341,6 +372,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         ctl.k = CH_BODIES[body_audio].scale;
         ch_tract_apply(&tract, ctl.x, 0.0f);
         ch_wave_init(&wave, (float)VM_FS, VM_CTRL, tract.k, tract.lip_s);
+        wave.fade = BODY_FADE[body_audio];
         for (s2 = 0; s2 < NSUB; s2++)
             steps[cur][s2].has_shape = 0;
         gain_now = 0.0f;
@@ -853,7 +885,7 @@ static void vp_send(void)
     p.src = ctl.source;                       /* (the fields the knobs do not set: as they are) */
     p.src.glide = kv[K_GLIDE];
     p.src.pressure = kv[K_BREATH];
-    p.src.breathiness = kv[K_BREATHY];
+    p.src.breathiness = kv[K_BREATHY] + (1.0f - kv[K_BREATHY]) * (float)midi_mod / 127.0f;   /* + the mod wheel */
     p.src.tension = kv[K_PRESSED];
     p.src.fry = kv[K_FRY];
     p.src.roughness = kv[K_ROUGH];
@@ -1512,6 +1544,45 @@ static int words_put(int slot, const char *t, uint32_t n)
     return 0;
 }
 
+/* ARP: a random line of the built-in words (3 to 6, each pronounced as the FM-1 knows it), in place of the words;
+ * unsaved until SAVE, as any edit. Another press, another line */
+static uint32_t ed_rand(void)
+{
+    static uint32_t x;
+    if (!x)
+        x = plat_ticks24() * 2654435761u | 1u;   /* (seeded by when it was first asked) */
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    return x;
+}
+
+static void ed_random(void)
+{
+    const uint32_t n_dict = (uint32_t)ch_dict_count(), want = 3u + ed_rand() % 4u;
+    uint32_t got = 0, n = 0, tries = 0;
+    int last = -1;
+    while (got < want && tries++ < 40u) {
+        int i = (int)(ed_rand() % n_dict);
+        const char *w = ch_dict_word(i);
+        uint32_t len = 0;
+        while (w[len])
+            len++;
+        if (i == last || !len || n + len + (n ? 1u : 0u) > 60u)
+            continue;
+        if (n)
+            ed.t[n++] = ' ';
+        while (*w)
+            ed.t[n++] = *w++;
+        last = i;
+        got++;
+    }
+    ed.t[n] = 0;
+    ed.n = ed.cur = (uint8_t)n;
+    ed_changed();
+    app_say("RANDOM", "WORDS");
+}
+
 static void ed_save(void)
 {
     uint32_t a = 0, b = ed.n;
@@ -1568,6 +1639,8 @@ static void ed_input(uint32_t keys, uint32_t btn, uint32_t now)
             ed_slot_say("SPEAKING");
         } else if (k == B_SAVE) {
             ed_save();
+        } else if (k == B_ARP) {              /* a random line of words */
+            ed_random();
         } else if (k == B_FX) {               /* the keys' layout: A-Z or QWERTY, kept at once */
             set.kb = (uint8_t)!set.kb;
             plat_store_save(OBJ_SETTINGS, &set, sizeof set);
@@ -1617,6 +1690,30 @@ static void ed_input(uint32_t keys, uint32_t btn, uint32_t now)
     }
 }
 
+/* expression's targets, each pass: the hardest-pressed held key (not in the editor: its keys type), or MIDI in's
+ * aftertouch while a MIDI note is held; the bend; the mod wheel into the source (vp_send) when it moves */
+static void expr_update(uint32_t keys)
+{
+    static uint8_t mod_was;
+    uint32_t k, p = 0;
+    if (!ed.on)
+        for (k = 0; k < NKEYS; k++)
+            if ((keys >> k & 1u) && touch_pressure(k) > p)
+                p = touch_pressure(k);
+    if (midi_held[0] | midi_held[1] | midi_held[2] | midi_held[3]) {
+        if (midi_prs > p)
+            p = midi_prs;
+    } else {
+        midi_prs = 0;                         /* (no MIDI note: its aftertouch is over) */
+    }
+    xvib_target = (float)p / 127.0f * EXPR_VIB_CENTS;
+    xbend_target = fm_exp2f((float)midi_bend / 8192.0f * (EXPR_BEND_SEMIS / 12.0f));
+    if (midi_mod != mod_was) {
+        mod_was = midi_mod;
+        vp_send();
+    }
+}
+
 static void input(void)
 {
     static uint32_t snap_mask;               /* keys pressed with FX held: snapshots, not notes */
@@ -1630,6 +1727,7 @@ static void input(void)
     mb_post();                               /* what is pending, if the mailbox has been emptied */
     touch_poll();                            /* the sensed keys' presses, velocities and pressure */
     keys = touch_keys();
+    expr_update(keys);
     if (ed.on) {                             /* the word editor: the keys type */
         ed_input(keys, btn, now);
         return;
@@ -2161,8 +2259,8 @@ static void draw_home(void)
 /* the words as typed (wrapped, the cursor green), the keyboard with each key's letter (lit while held), the controls */
 #define ED_TOP 24
 #define ED_LINE_H 22
-#define ED_LINES 5
-#define ED_KB_Y 144
+#define ED_LINES 4
+#define ED_KB_Y 132                            /* (four lines of words, three of controls below the keys) */
 static uint8_t ed_wrap(uint8_t *start)        /* the lines' starts (word wrap at 224 px, FONT_B, upper case) */
 {
     uint8_t nl = 1, i, sp = 0;
@@ -2291,6 +2389,10 @@ static void draw_edit(void)
     x = cv_text(x + 4, 20, &FONT_XS, "KEEP", V_BLUE_MID);
     x = cv_text(x + 10, 20, &FONT_XS, "EDIT", V_WHITE);
     cv_text(x + 4, 20, &FONT_XS, "LEAVE", V_BLUE_MID);
+    x = cv_text(8, 36, &FONT_XS, "ARP", V_WHITE);
+    x = cv_text(x + 4, 36, &FONT_XS, "RANDOM WORDS", V_BLUE_MID);
+    x = cv_text(x + 10, 36, &FONT_XS, "PRESET", V_WHITE);
+    cv_text(x + 4, 36, &FONT_XS, "SLOT", V_BLUE_MID);
     cv_blit(0, ED_KB_Y + 56);
 }
 
@@ -2414,6 +2516,12 @@ int app_expect(const char *what, int *got)
         *got = body_audio;
     else if (!strcmp(what, "f1x"))           /* the vowel pad's F1 at OPEN 0.5, Hz */
         *got = (int)(pad_f1(0.5f) + 0.5f);
+    else if (!strcmp(what, "xvib"))          /* expression: the vibrato added (cents), the bend (cents), the breath (%) */
+        *got = (int)(xvib_target + 0.5f);
+    else if (!strcmp(what, "xbend"))
+        *got = (int)(fm_log2f(xbend_target) * 1200.0f + (xbend_target >= 1.0f ? 0.5f : -0.5f));
+    else if (!strcmp(what, "xbreath"))
+        *got = (int)(vp_out.src.breathiness * 100.0f + 0.5f);
     else if (!strcmp(what, "kb"))
         *got = set.kb;
     else if (!strcmp(what, "slot"))

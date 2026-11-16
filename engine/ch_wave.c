@@ -60,7 +60,7 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
         s->area = R(1.0) * k * k;
     }
     w->w1 = w->w2 = R(1.0);
-    w->w3 = w->dw1 = w->dw2 = w->dw3 = 0;
+    w->w3 = w->dw1 = w->dw2 = w->dw3 = w->nk1_d = 0;
     for (i = 0; i < CH_WNMAX; i++) {
         ch_wnsec_t *s = &w->nsec[i];
         s->R[0] = s->R[1] = s->L[0] = s->L[1] = s->k = 0;
@@ -111,6 +111,16 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
     w->lim_hold = 0;
     w->lim_hold_n = (int32_t)js_round_c(R(0.025) * fs);
     w->lim_release = EXP(R(-1.0) / (R(0.2) * fs));
+}
+
+/* a jet's kinetic loss coefficients between areas a and b, each way (CHIMERA's: the expansion leaving the narrower
+ * side, a tenth of it entering) */
+CH_HOT static void jet_coefs(ch_real a, ch_real b, ch_real *kf, ch_real *kb)
+{
+    const ch_real half_rho = R(0.5) * RHO;
+    const ch_real ef = R(1.0) / a - R(1.0) / b, eb = -ef;   /* forward: out of a into b */
+    *kf = (ef > 0 ? half_rho * ef * ef : 0) + (eb > 0 ? R(0.1) * half_rho * eb * eb : 0);
+    *kb = (eb > 0 ? half_rho * eb * eb : 0) + (ef > 0 ? R(0.1) * half_rho * ef * ef : 0);
 }
 
 /* the radiation load's reflection at an open end of area a: CHIMERA's parallel R-L (Lr = 8 rho / (3 pi sqrt(pi a)),
@@ -266,9 +276,16 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
         w->sec[m].k = refl(w->sec[m - 1].area, w->sec[m].area);
         w->sec[m].dk = (refl(target[m - 1], target[m]) - w->sec[m].k) * inv;
     }
-    /* the nose: where it joins, the port's area as its first section */
-    m = (int)js_round_c(t->ph_len / per);
-    w->jv = m < 1 ? 1 : m > w->n - 1 ? w->n - 1 : m;
+    /* the nose: where it joins, the port's area as its first section. It moves only when the pharynx's end is a whole
+     * section away (not half): a move restarts the junction's waves, and with the nose carrying the mouth's held
+     * pressure (a closed /m/ or /n/) that was a spike, a crack as the word ended (before 0.6.0 it moved at every half) */
+    {
+        const ch_real at = t->ph_len / per;
+        if (w->jv < 1 || w->jv > w->n - 1 || FABS(at - (ch_real)w->jv) >= R(1.0)) {
+            m = (int)js_round_c(at);
+            w->jv = m < 1 ? 1 : m > w->n - 1 ? w->n - 1 : m;
+        }
+    }
     /* (its weights likewise restart from the areas now, at its junction; clamped at 0, as refl's) */
     a1 = mx(0, w->sec[w->jv - 1].area);
     a2 = mx(0, w->sec[w->jv].area);
@@ -290,14 +307,19 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     } else {
         w->dw1 = w->dw2 = w->dw3 = 0;
     }
-    w->nsec[0].area = a3;
+    /* the velum port: its junction ramps to the new area's too (before 0.6.0 it was set at once: with the nose
+     * carrying the mouth's held pressure, as a final /m/ opens, that step was a one-sample spike, a crack at the
+     * word's end) */
     w->nsec[1].k = refl(w->nsec[0].area, w->nsec[1].area);
+    w->nsec[0].area = a3;
+    w->nk1_d = (refl(a3, w->nsec[1].area) - w->nsec[1].k) * inv;
     rad_coefs(w, 0, target[w->n - 1]);
     rad_coefs(w, 1, w->nsec[w->nn - 1].area);
     /* the jets: CHIMERA's kinetic coefficients (the expansion leaving the narrower side, a tenth of it entering) at
-     * each open junction narrower than CH_WJET_AREA; a jet already there keeps its flow */
+     * each open junction narrower than CH_WJET_AREA; a jet already there keeps its flow. The coefficients ramp from
+     * the sections' areas now to the target's, as the reflections do (before 0.6.0 the target's were set at once:
+     * lips closing fast, as into a final /m/, stepped the flow through them, a one-sample spike) */
     {
-        const ch_real half_rho = R(0.5) * RHO;
         ch_real u_old[CH_WMAX];
         int j, nj = 0;
         for (m = 0; m < w->n; m++)
@@ -305,16 +327,19 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
         for (j = 0; j < w->n_jet; j++)
             u_old[w->jet_m[j]] = w->jet_u[j];
         for (m = 1; m < w->n && nj < 8; m++) {
-            ch_real a = target[m - 1], b = target[m], ia, ib, ef, eb;
+            ch_real a = target[m - 1], b = target[m], kf, kb, kf0, kb0;
             if (m == w->jv || mn(a, b) >= (ch_real)CH_WJET_AREA || a < w->closed_area || b < w->closed_area)
                 continue;
-            ia = R(1.0) / a;
-            ib = R(1.0) / b;
-            ef = ia - ib;                              /* forward: out of a into b */
-            eb = ib - ia;
+            jet_coefs(a, b, &kf, &kb);
+            if (w->sec[m - 1].area >= w->closed_area && w->sec[m].area >= w->closed_area)
+                jet_coefs(w->sec[m - 1].area, w->sec[m].area, &kf0, &kb0);
+            else
+                kf0 = kf, kb0 = kb;                    /* (still closed: it starts at the opening's) */
             w->jet_m[nj] = (int16_t)m;
-            w->jet_kf[nj] = (ef > 0 ? half_rho * ef * ef : 0) + (eb > 0 ? R(0.1) * half_rho * eb * eb : 0);
-            w->jet_kb[nj] = (eb > 0 ? half_rho * eb * eb : 0) + (ef > 0 ? R(0.1) * half_rho * ef * ef : 0);
+            w->jet_kf[nj] = kf0;
+            w->jet_kb[nj] = kb0;
+            w->jet_dkf[nj] = (kf - kf0) * inv;
+            w->jet_dkb[nj] = (kb - kb0) * inv;
             w->jet_u[nj] = u_old[m];
             nj++;
         }
@@ -486,6 +511,7 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
             sec[jv].R[q] = (pj - in2) * fade;
             sec[jv - 1].L[q] = (pj - in1) * fade;
             ns[0].R[q] = (pj - in3) * fade_n;
+            ns[1].k += w->nk1_d;
             sec[jv].k += sec[jv].dk;
             sec[jv - 1].area += sec[jv - 1].darea;
         }
@@ -504,6 +530,8 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
             const int jm = w->jet_m[m];
             const ch_real a1 = sec[jm - 1].area, a2 = sec[jm].area;
             ch_real in1, in2, up, rj, z1, z2, u;
+            w->jet_kf[m] += w->jet_dkf[m];
+            w->jet_kb[m] += w->jet_dkb[m];
             if (a1 < w->closed_area || a2 < w->closed_area) {
                 w->jet_u[m] = 0;
                 continue;                       /* still closed on one side: the plain scattering's reflection */
@@ -511,7 +539,7 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
             in1 = sec[jm - 1].R[p];
             in2 = sec[jm].L[p];
             up = w->jet_u[m];
-            rj = (up >= 0 ? w->jet_kf[m] : w->jet_kb[m]) * FABS(up);
+            rj = mx(0, up >= 0 ? w->jet_kf[m] : w->jet_kb[m]) * FABS(up);
             z1 = w->rho_c / a1;
             z2 = w->rho_c / a2;
             u = R(2.0) * (in1 - in2) / (z1 + z2 + rj);

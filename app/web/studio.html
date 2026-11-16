@@ -71,7 +71,8 @@
     <p class="credit"><strong>A port of <a href="https://github.com/jamesondh/chimera-vocal-synth">CHIMERA</a> by Jameson
       Hodge</strong> (MIT licence) to the M-VAVE FM-1: the voice is his. Pronunciations from the
       <a href="https://github.com/cmusphinx/cmudict">CMU Pronouncing Dictionary</a> (Carnegie Mellon University, BSD
-      licence). Unofficial: not affiliated with M-VAVE or with CHIMERA's author.</p>
+      licence); random words from <a href="http://wordlist.aspell.net/">SCOWL</a> (Kevin Atkinson,
+      <a href="SCOWL-LICENSE.txt">its notice</a>). Unofficial: not affiliated with M-VAVE or with CHIMERA's author.</p>
     <p>Write the words the FM-1 sings: up to eight lines, one per slot, each key the next syllable. Try them on the
       emulated FM-1 (<strong>Play</strong> speaks a line; its keys then sing it), then send them to yours over USB.</p>
   </div>
@@ -175,6 +176,26 @@ function status(msg, cls = "muted") { const s = $("status"); s.textContent = msg
   }
   render();
 })();
+
+// ---------------------------------------------------------------- random words
+// a line of 3 to 6 random words: everyday English words (SCOWL's most common, each with a CMUdict pronunciation:
+// random_words.txt, lab/tools/gen_random_words.py), or the FM-1's own built-in words until that has loaded
+let randomWords = null;
+(async () => {
+  try {
+    const r = await fetch("random_words.txt");
+    if (r.ok) randomWords = (await r.text()).split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  } catch { /* the built-in words, then */ }
+})();
+function randomLine() {
+  const pool = randomWords && randomWords.length ? randomWords : Object.keys(BUILTIN);
+  const n = 3 + Math.floor(Math.random() * 4), out = [];
+  while (out.length < n && out.length < pool.length) {
+    const w = pool[Math.floor(Math.random() * pool.length)];
+    if (!out.includes(w)) out.push(w);
+  }
+  return out.join(" ").slice(0, MAX_TEXT);
+}
 
 // ---------------------------------------------------------------- words, as the FM-1 reads them
 /** the words of a line as the FM-1's lyrics reader splits them: [{tok, parts}], or {mel: true} for a lone - or ~ */
@@ -314,12 +335,16 @@ function render() {
     send.textContent = "Send to FM-1";
     send.title = "Put this line in this slot on your FM-1 (its other slots stay as they are)";
     send.onclick = () => sendSlot(i);
+    const rnd = document.createElement("button");
+    rnd.textContent = "Random";
+    rnd.title = "Fill this slot with random words from the dictionary (as ARP does in the FM-1's word editor, with its own words)";
+    rnd.onclick = () => { s.text = randomLine(); s.fixes = {}; render(); };
     const clear = document.createElement("button");
     clear.textContent = "Clear";
     clear.onclick = () => { s.text = ""; s.fixes = {}; render(); };
     const btns = document.createElement("span");
     btns.className = "bar";
-    btns.append(play, send, clear);
+    btns.append(play, send, rnd, clear);
     head.append(left, btns);
     const ta = document.createElement("textarea");
     ta.maxLength = MAX_TEXT;

@@ -19,8 +19,27 @@ is CHIMERA's flat view, live: the head moving as it sings.
   syllable it starts again.
 - **VOWEL** (FX): the keys play pitch only, the voice holding the vowel the knobs set; the last key held sounds, the
   pitch gliding (Glide) between keys.
-- MIDI in plays as the keys do, and lights the keys its notes fall on. **OCT− / OCT+** move the keys an octave. About 50 ms after the sound dies away the
+- **Pressing harder** on a held key deepens its vibrato (up to 50 cents more), like a singer leaning into a long note.
+  From 0.6.0.
+- MIDI in plays as the keys do, and lights the keys its notes fall on ([below](#playing-from-a-midi-controller)).
+- **OCT− / OCT+** move the keys an octave. About 50 ms after the sound dies away the
   voice rests (nothing is simulated, the output is silent).
+
+## Playing from a MIDI controller
+
+MIDI sent to the FM-1, from a computer over USB (a DAW, or a controller plugged into the computer) or from a
+controller on the FM-1's TRS MIDI jack, plays the voice as the FM-1's own keys do, in WORDS and VOWEL mode, and lights the keys its notes fall on at the current octave. From 0.6.0
+it also shapes the voice:
+
+| Controller | What it does |
+| --- | --- |
+| Notes | Sing the next syllable (WORDS) or the held vowel (VOWEL), at the note's pitch and velocity |
+| Aftertouch (channel or polyphonic) | Deepens the vibrato while a note is held, up to 50 cents more, as pressing harder on the FM-1's keys does |
+| Mod wheel (CC1) | Adds breath: from the Breathy knob's setting (wheel down) up to fully breathy (wheel up) |
+| Pitch bend | Bends the pitch up to ±2 semitones |
+
+The FM-1 itself has no mod wheel or pitch bend: these come from the controller. Every MIDI channel is listened to.
+(Bluetooth MIDI, and a USB keyboard plugged straight into the FM-1, aren't built into this firmware.)
 
 ## The buttons
 
@@ -108,9 +127,14 @@ the keys are singing.
     the space glow softly, and are green on the screen's keyboard, so you can find the rows.
 
 ![The word editor in QWERTY: the black keys Q to P and a space, the white keys A to L then Z to M, W lit](img/edit-qwerty.png "The word editor, QWERTY: the W key held")
+
+The bottom of the screen lists the editor's controls, so you don't need to remember them:
+
 - **K1** moves the cursor. **K2** changes the character before the cursor, through A-Z, space and the punctuation
   `, . ? ! ' -`. Commas and full stops give the voice its pauses, as in the Studio.
 - **OCT−** deletes the character before the cursor (hold it to keep deleting), **OCT+** the one after it.
+- **ARP** fills the slot with a random line of words (3 to 6, from the FM-1's built-in words, which it always
+  pronounces well); press it again for another. As any edit, it's kept only if you SAVE. From 0.6.0.
 - **PLAY** speaks the words as they are typed, to try them.
 - **SAVE** keeps them in the slot, through power-off, and leaves; the keys then sing them. Saving an empty slot
   removes it.
@@ -120,7 +144,8 @@ the keys are singing.
 
 A slot holds up to 150 characters. The words you type are pronounced by the FM-1's built-in word list (about 480
 common words) and its spelling rules; the Studio can give any word its dictionary pronunciation. The Studio reads the
-slots back when it connects, so words typed on the FM-1 show up there too.
+slots back when it connects, so words typed on the FM-1 show up there too. Each of the Studio's slots has a
+**Random** button as well, drawing from about 8,600 everyday English words (from 0.6.0).
 
 ## What the screen shows
 

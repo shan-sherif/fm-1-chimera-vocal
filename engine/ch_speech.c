@@ -358,6 +358,10 @@ int ch_letter_to_sound(const char *w, ch_seg_t *out, int cap)
     return n;
 }
 
+/* the built-in words (the FM-1's: ch_dict_data.h), by index: what the word editor's random line picks from */
+int ch_dict_count(void) { return (int)(sizeof CH_DICT / sizeof CH_DICT[0]); }
+const char *ch_dict_word(int i) { return i >= 0 && i < ch_dict_count() ? CH_DICT[i].w : ""; }
+
 static const char *dict_builtin(const char *w)
 {
     int lo = 0, hi = (int)(sizeof CH_DICT / sizeof CH_DICT[0]) - 1;
