@@ -15,6 +15,7 @@
 #include "ch_beat.h"
 #include "ch_wave.h"
 #include "voice_bodies.h"
+#include "ch_song.h"
 
 #define FS 44100
 #define CTRL 64
@@ -81,6 +82,8 @@ static void voice(int body)
     ch_tract_apply(&tract, ctl.x, 0.0f);
     ch_wave_init(&wave, (ch_real)FS, CTRL, tract.k, tract.lip_s);
     wave.fade = BODY_FADE[body];
+    if (getenv("NARROW"))                     /* (lab) a section's area: its narrowest cell's (1) or its middle's (0) */
+        wave.narrowest = (uint8_t)atoi(getenv("NARROW"));
     if (getenv("POCK_K"))
         wave.pock_k *= (ch_real)atof(getenv("POCK_K"));
     if (getenv("WALL_RAD"))
@@ -114,6 +117,24 @@ static void render(float *out, size_t n, ch_beat_player_t *seq)
             for (c = 0; c < shape.n_or; c++) printf("%c", shape.or_min[c] < wave.closed_area || shape.or_areas[c] < wave.closed_area ? 'X' : '.');
             printf("\n");
         }
+        if (getenv("AREA_AT") && anat && (ctl.clock - atof(getenv("AREA_AT"))) * (ctl.clock - atof(getenv("AREA_AT"))) < 9e-6) {
+            /* (lab) AREA_AT=t: the waveguide's sections (cm2) and the noise sources' places then */
+            int c;
+            printf("t %.3f n %d len %.2f (ph %.2f or %.2f) teeth %.2f lips %.2f\n  areas:", (double)ctl.clock, wave.n,
+                   (double)(shape.ph_len + shape.or_len), (double)shape.ph_len, (double)shape.or_len, (double)tract.teeth_s,
+                   (double)tract.lip_s);
+            for (c = 0; c < wave.n; c++)
+                printf(" %d:%.3f", c, (double)wave.sec[c].area);
+            printf("\n  oral cells (%.3f cm each):", (double)(shape.or_len / shape.n_or));
+            for (c = 0; c < shape.n_or; c++)
+                printf(" %.3f/%.3f", (double)shape.or_areas[c], (double)shape.or_min[c]);
+            printf("\n");
+            for (c = 0; c < wave.n_noise; c++)
+                printf("  noise %d: src %d fwd %d bwd %d (cm %.2f %.2f %.2f) level %.3g lp %.3f hp %.3f\n", c, wave.n_src[c],
+                       wave.n_fwd[c], wave.n_bwd[c], (double)shape.noise_s[c][0], (double)shape.noise_s[c][1],
+                       (double)shape.noise_s[c][2], (double)wave.noise[c].level, (double)wave.noise[c].lp_coef,
+                       (double)wave.noise[c].hp_coef);
+        }
         if (getenv("BEAT_DEBUG") && anat && ctl.clock > 0.1 && ctl.clock < 0.3)
             printf("  %.3f closure %.2f a_g %.4f port %.3f larynx %.2f lip %.2f pockets %d: c%d-%d s%d-%d p %.0f -> %+.0f/step | cells shut:",
                    (double)ctl.clock, (double)ctl.glottis.closure, (double)wave.a_g, (double)shape.velum_port_area, (double)ctl.x[CH_LARYNX],
@@ -141,6 +162,87 @@ int main(int argc, char **argv)
     static ch_gesture_t buf[CH_BEAT_MAX_G];
     char path[512];
     int s;
+    if (getenv("BREATH")) {                  /* (lab) BREATH="id:k,id:k": a sound's breath factor */
+        const char *q = getenv("BREATH");
+        while (*q) {
+            int id = atoi(q);
+            const char *c = strchr(q, ':');
+            if (!c)
+                break;
+            ch_beat_breath[id] = (ch_real)atof(c + 1);
+            q = strchr(c, ',');
+            if (!q)
+                break;
+            q++;
+        }
+    }
+    if (getenv("SONG")) {                    /* (lab) SONG="words" sung on TUNE (0..5), as the FM-1's SING page sings */
+        static ch_syl_t syls[CH_SYL_MAX];
+        static ch_sung_t notes[CH_SONG_MAX];
+        static ch_real times[CH_SONG_MAX + 1];
+        static ch_gesture_t g[256];
+        const ch_tune_t *t = &CH_TUNES[getenv("TUNE") ? atoi(getenv("TUNE")) : 0];
+        const int oct = body == 0 ? t->oct_male : body == 1 ? t->oct_female : t->oct_child;
+        int ns = ch_lyrics(getenv("SONG"), 0, 0, syls, CH_SYL_MAX), nn, i, k, total = 0;
+        size_t n;
+        nn = ch_song_fit(t, syls, ns, 12 * oct, notes, CH_SONG_MAX);
+        ch_song_times(notes, nn, t->bpm, times);
+        voice(body);
+        for (k = 0; k < CH_NARTIC; k++)
+            ctl.target[k] = CH_NEUTRAL[k];
+        for (i = 0; i < nn;) {               /* (all phrases at once here: the FM-1 streams them) */
+            ch_plan_t plan;
+            plan.g = g;
+            plan.cap = 256;
+            plan.n = 0;
+            plan.dropped = 0;
+            i = ch_song_plan_phrase(notes, nn, i, syls, times, 0.35f, 35.0f, &plan);
+            for (k = 0; k < plan.n; k++)
+                ch_score_add(&ctl.score, &g[k]);
+            total += plan.n;
+        }
+        for (i = 0; i < nn; i++)
+            printf("%s%s%d:%.1f", i ? " " : "", notes[i].held ? "~" : syls[notes[i].syl].text, notes[i].midi, (double)notes[i].beats);
+        n = (size_t)((times[nn] + 1.5) * FS) / CTRL * CTRL;
+        memset(out, 0, sizeof out);
+        render(out, n, 0);
+        snprintf(path, sizeof path, "%s/song.wav", dir);
+        write_wav(path, out, n);
+        printf("\nsung: %d syllables, %d notes, %d gestures, %.2f s, score dropped %u\n", ns, nn, total, (double)times[nn], ctl.score.dropped);
+        return 0;
+    }
+    if (getenv("SAY")) {                     /* (lab) speech instead: SAY="text" spoken at the body's pitch, as PLAY does */
+        static ch_seg_t segs[CH_SEG_MAX];
+        static ch_phrase_t ph[CH_PHRASE_MAX];
+        static ch_gesture_t g[256];
+        ch_plan_opts_t o;
+        ch_plan_t plan;
+        int n_segs, np, i;
+        size_t n = FS * 4 / CTRL * CTRL;
+        voice(body);
+        np = ch_text_to_phrases(getenv("SAY"), 0, 0, segs, CH_SEG_MAX, &n_segs, ph, CH_PHRASE_MAX);
+        ch_plan_defaults(&o);
+        o.t0 = 0.05f;
+        o.f0 = CH_BODIES[body].f0;
+        plan.g = g;
+        plan.cap = 256;
+        plan.n = 0;
+        plan.dropped = 0;
+        ch_plan_phrases(segs, ph, np, &o, &plan);
+        for (i = 0; i < plan.n; i++)
+            ch_score_add(&ctl.score, &g[i]);
+        {   /* the speaking posture: the neutral one, the breath the score's (as the app's WORDS) */
+            int k;
+            for (k = 0; k < CH_NARTIC; k++)
+                ctl.target[k] = CH_NEUTRAL[k];
+        }
+        memset(out, 0, sizeof out);
+        render(out, n, 0);
+        snprintf(path, sizeof path, "%s/say.wav", dir);
+        write_wav(path, out, n);
+        printf("said: %d gestures\n", plan.n);
+        return 0;
+    }
     for (s = 0; s < CH_BEAT_N; s++) {
         if (getenv("BEAT_DEBUG") && atoi(getenv("BEAT_DEBUG")) != s)
             continue;

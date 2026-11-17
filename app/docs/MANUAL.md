@@ -6,7 +6,7 @@ airway (lungs, vocal folds, throat, mouth and nose), not samples.
 
 FM-1 Chimera Vocal sings words: each key sings the next syllable of a line, at the key's pitch, through CHIMERA's own
 text-to-speech front end. In VOWEL mode the keys play pitch and the knobs move the mouth through the vowels. The screen
-is CHIMERA's flat view, live: the head moving as it sings. From 0.7.0 the same mouth beatboxes (SEQ), and LFO swaps
+is CHIMERA's flat view, live: the head moving as it sings. From 0.8.0 it also sings whole lines on CHIMERA's tunes (ENV). From 0.7.0 the same mouth beatboxes (SEQ), and LFO swaps
 it for a seal's or a songbird's (CHIMERA's Bestiary).
 
 ![The boot screen: FM-1 Chimera Vocal, the version, the credits](img/boot.png "The boot screen")
@@ -57,9 +57,10 @@ The FM-1 itself has no mod wheel or pitch bend: these come from the controller. 
 | EDIT | Opens the word editor on the slot being sung: type words on the keys ([below](#typing-words)). (From 0.5.0; before, EDIT stepped the pages.) |
 | PLAY | Speaks the word slot's words (in WORDS mode). Pressing a key while it speaks starts singing instead. |
 | SAVE | Keeps the knobs in the voice preset, the vowel snapshots and the settings, through power-off. Its light is on while something is unsaved. |
+| ENV | Sings the word slot on one of CHIMERA's tunes ([below](#tunes)). From 0.8.0. |
 | SEQ | The beatbox and back: the keys become CHIMERA's drum sounds, with a step sequencer ([below](#beatbox)). From 0.7.0. |
 | LFO | The Bestiary (the seal or the songbird) and back to the human voice ([below](#bestiary)). Its light is on in the Bestiary. From 0.7.0. |
-| GLO | The debug page (the cores' timings) and back. |
+| GLO | The debug page (the cores' timings) and back. From 0.8.0 it also opens over the beatbox and the SING page, to see their load while they play. |
 
 ## The knobs
 
@@ -118,7 +119,28 @@ made there instead. SAVE keeps them.
   ROUGH, FRY, TWANG (this port's own: CHIMERA has none). SAVE stores the knobs as they are into the preset chosen.
 - **HOME + PRESET** (turn PRESET with HOME held) chooses the word slot the keys sing, 1-8, as the Studio sent them
   or as you typed them. The screen shows the slot and how it starts.
-- In the beatbox PRESET chooses the beat, in the Bestiary the creature's call (from 0.7.0).
+- In the beatbox PRESET chooses the beat, in the Bestiary the creature's call (from 0.7.0), on the SING page the
+  tune (from 0.8.0).
+
+## Tunes
+
+**ENV** opens the SING page (from 0.8.0): the FM-1 sings the word slot by itself, on one of CHIMERA's tunes, the way
+CHIMERA's Sing button does. Your words are cut into lines and each line fitted to a phrase of the tune: more syllables
+than notes split the longest notes, fewer stretch a syllable over several (its vowel carried from one pitch to the
+next). Each phrase is sung on its own breath.
+
+- **PLAY** sings, and PLAY again stops. With an empty slot it sings "la" on every note.
+- **PRESET** chooses the tune: DREAMY (minor, unhurried), JOYFUL (major, bright), SOMBER (minor, slow), PLAYFUL
+  (quick short notes, room for many words), GENTLE (a slow waltz), TWINKLE (the traditional tune).
+- **K1** tempo (×0.5 to ×1.5), **K2** key (±12 semitones), **K3** vibrato (cents), **K4** the word slot.
+- **ALGORITHM** chooses the body: each sings the tune in its own octave (the male an octave down). The voice preset's
+  sound (breathy, pressed, bright...) carries over.
+- **SAVE** keeps the tune, tempo, key and vibrato. **ENV** or **HOME** leaves.
+
+The screen shows the head singing, the syllable sounding, and the phrase's melody: each note a bar at its pitch, as
+long as its beats, the one sounding lit.
+
+![The SING page: Dreamy, the syllable THERE sounding, the words of slot 1, the phrase's melody with its note lit](img/sing.png "ENV: slot 1 sung on Dreamy")
 
 ## Beatbox
 
@@ -270,7 +292,14 @@ Bestiary's (the creature's pitch, its airway, its call): see their sections.
 | TWO CORES / ONE CORE | Whether the second core is running. If it fails, the voice continues on one core. |
 
 Anything under 100 % fits. The anatomy (the tongue, jaw and lip positions turned into the tract's shape) runs every
-4th control step, the tract gliding between: more often overloads the FM-1 while it speaks.
+4th control step, the tract gliding between. On the debug page **K1** tries it every 2nd step or every step, to hear
+and measure (from 0.8.0; back to every 4th at power-off): every 2nd peaks near 100 % of core 1 while it speaks, every
+step overloads it (XRUNS count up), and the difference is hard to hear.
+
+**K2** on the debug page (from 0.8.0, off again at power-off) turns on a treble shelf: the voice 7 dB quieter above
+about 2.5 kHz. Measured against CHIMERA's renders, the FM-1's voice is 3-9 dB brighter up there; the shelf brings it
+about twice as close, but it also dulls the snare and the crash. It is there to listen to, before deciding whether it
+should stay. The debug page's K1 and K2 work over the beatbox and the SING page too.
 
 ## The Studio: your words
 

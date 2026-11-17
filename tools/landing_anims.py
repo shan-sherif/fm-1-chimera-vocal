@@ -82,6 +82,11 @@ def bird():
     return interleave([(0, "tap LFO"), (100, "spin ALGO 1"), (900, "key 7 down"), (1800, "key 7 up"), (2000, "tap PLAY")], "bird", 3.6)
 
 
+def sing():
+    """ENV: slot 1 sung on CHIMERA's Dreamy, the head singing, the melody moving"""
+    return interleave([(0, "tap ENV"), (300, "tap PLAY")], "sing", 4.2)
+
+
 def gif(name, out):
     frames = sorted(WORK.glob(f"{name}-*.png"))
     imgs = [Image.open(f).convert("RGB") for f in frames]
@@ -99,7 +104,7 @@ def main():
     for f in WORK.glob("*.png"):
         f.unlink()
     OUT.mkdir(parents=True, exist_ok=True)
-    for name, lines in (("words", words()), ("vowel", vowel()), ("speak", speak()), ("beat", beat()), ("seal", seal()), ("bird", bird())):
+    for name, lines in (("words", words()), ("vowel", vowel()), ("speak", speak()), ("beat", beat()), ("seal", seal()), ("bird", bird()), ("sing", sing())):
         script = WORK / f"{name}.txt"
         # (a fresh boot each: the voice at rest, slot 1, page 1)
         script.write_text("\n".join(["wait 400"] + lines) + "\n")

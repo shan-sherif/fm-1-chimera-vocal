@@ -84,7 +84,7 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
     w->vol_src = 2;
     w->vol_narrow = R(0.1);
     w->vol_smooth = R(0.003);                 /* (~8 ms) */
-    w->narrowest = 1;
+    w->narrowest = 2;
     w->vol_u = w->vol_goal = 0;
     w->resets = 0;
     w->vol_ok = 0;
@@ -117,6 +117,8 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
     w->output_gain = R(1.33) * R(5.5e-7) * (k >= R(1.0) ? R(1.0) : k <= R(0.9) ? R(0.55) : R(0.55) + R(0.45) * (k - R(0.9)) / R(0.1));
     w->dc_x = w->dc_y = w->lim_env = 0;
     w->dc_coef = EXP((R(-2.0) * CH_PI * R(25.0)) / fs);
+    w->shelf_g = w->shelf_lp = 0;
+    w->shelf_c = EXP((R(-2.0) * CH_PI * R(2500.0)) / fs);
     w->lim_hold = 0;
     w->lim_hold_n = (int32_t)js_round_c(R(0.025) * fs);
     w->lim_release = EXP(R(-1.0) / (R(0.2) * fs));
@@ -162,8 +164,8 @@ CH_HOT static ch_real cell_area(const ch_shape_t *t, int oral, int i, ch_real cl
 CH_HOT static ch_real tube_area(const ch_wave_t *w, const ch_shape_t *t, ch_real s0, ch_real s1, ch_real closed, ch_real *amin)
 {
     const ch_real dph = t->ph_len / (ch_real)t->n_ph, dor = t->or_len / (ch_real)t->n_or, mid = R(0.5) * (s0 + s1);
-    ch_real a, lo = R(1e9), lm = R(1e9);
-    int part, i, i0, i1;
+    ch_real a, lo = R(1e9), lm = R(1e9), lc = R(1e9);
+    int part, i, i0, i1, shut = 0;
     if (mid < t->ph_len) {
         i = (int)(mid / dph);
         a = cell_area(t, 0, i < 0 ? 0 : i > t->n_ph - 1 ? t->n_ph - 1 : i, closed);
@@ -182,18 +184,25 @@ CH_HOT static ch_real tube_area(const ch_wave_t *w, const ch_shape_t *t, ch_real
         i1 = i1 > n - 1 ? n - 1 : i1;
         for (i = i0; i <= i1; i++) {
             ch_real c = cell_area(t, part, i, closed), m = part ? t->or_min[i] : t->ph_min[i];
+            const ch_real cc = base + ((ch_real)i + R(0.5)) * d;
+            if (c == 0)
+                shut = 1;
             if (c < lo)
                 lo = c;
             if (m < lm)
                 lm = m;
+            if (cc >= s0 && cc < s1 && c < lc)     /* a cell centred in the section (one shorter than a section) */
+                lc = c;
         }
     }
-    if (lo == 0) {
+    if (shut) {
         *amin = 0;
         return 0;
     }
     *amin = lm;
-    return w->narrowest && lo < a ? lo : a;
+    if (w->narrowest == 1)
+        return lo < a ? lo : a;
+    return w->narrowest == 2 && lc < a ? lc : a;
 }
 
 CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch_glottis_params_t *g, ch_real p_lung)
@@ -776,6 +785,10 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
         w->dc_x = x;
         w->dc_y = hp;
         x = hp;
+        if (w->shelf_g != 0) {
+            w->shelf_lp = x + w->shelf_c * (w->shelf_lp - x);
+            x += w->shelf_g * (x - w->shelf_lp);
+        }
         av = FABS(x);
         if (av >= w->lim_env) {
             w->lim_env = av;

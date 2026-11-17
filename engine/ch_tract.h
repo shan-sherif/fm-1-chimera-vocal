@@ -30,6 +30,10 @@ typedef struct {
     int n;
     int nc;                                        /* boxes: chunk c covers points c*CH_CHUNK .. +CH_CHUNK */
     ch_real box[CH_MAXPTS / CH_CHUNK + 1][4];      /* min x, min y, max x, max y */
+    /* each segment's 1 / its length² (0: too short to count) and its run over its rise (dx / dy, for the inside
+     * test), once the line is built: the distance queries multiply instead of dividing (0.8.0: a divide costs tens
+     * of cycles on the FM-1, and the contact model makes thousands a step) */
+    ch_real il2[CH_MAXPTS], slope[CH_MAXPTS];
 } ch_line;
 
 typedef struct {

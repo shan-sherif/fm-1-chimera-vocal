@@ -98,7 +98,10 @@ typedef struct {
      * CHIMERA's devoices in ~15) */
     uint8_t vol_src;                        /* 0 off, 1 behind a closure, 2 behind a closure or a constriction under vol_narrow */
     ch_real vol_narrow, vol_smooth;
-    uint8_t narrowest;                      /* a section's area: its narrowest anatomy cell's (1), its middle's (0) */
+    /* a section's area: its narrowest anatomy cell's (1), its middle's (0), its middle's or a shorter cell's centred in
+     * it (2, from 0.8.0: with 1 a constriction spread over every section it touched, a /s/ 1.1 cm long grew to 2.4 cm
+     * and filled the space behind the teeth, so its hiss rang at 4-5 kHz where CHIMERA's rings at 2-3) */
+    uint8_t narrowest;
     ch_real vol_u, vol_goal;
     ch_real vcell[2 * CH_MAXTUBE];          /* each anatomy cell's volume at the last shape (pharynx, then mouth) */
     uint8_t vol_ok;
@@ -132,6 +135,9 @@ typedef struct {
     uint32_t rng;
     /* the output: CHIMERA's gain, DC blocker and limiter */
     ch_real rad_prev, output_gain, dc_x, dc_y, dc_coef, lim_env, lim_release;
+    /* a treble shelf on the output (0.8.0, off unless set): x + shelf_g (x - lowpass(x)), the lowpass at shelf_c.
+     * Over 3 kHz the waveguide is 3-9 dB brighter than CHIMERA's airway (its sentences' spectra, all bodies) */
+    ch_real shelf_g, shelf_c, shelf_lp;
     int32_t lim_hold, lim_hold_n;
     uint32_t resets;                        /* times the state stopped being a number and was cleared (should stay 0) */
 } ch_wave_t;

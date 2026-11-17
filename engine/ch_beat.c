@@ -75,12 +75,21 @@ static void ejective(ch_plan_t *o, ch_real at, ch_real accent)
     g(o, R(-0.05), R(0.004), R(0.03), R(0.08), R(40.0), R(3.0))->targets[CH_LARYNX] = mn(R(1.6), R(1.25) + R(0.3) * accent);
 }
 
+/* each sound's breath on the FM-1 (0.8.0): its waveguide answers a beatboxer's strong breaths (1.2-1.75 x the
+ * performer's pressure) a few dB louder than CHIMERA's airway, where speech's are within 1 dB; each breath sound's
+ * level scaled so its hits sit with the kick's and the hum's against CHIMERA's renders (lab/port/beat_test, the
+ * beats' hits by RMS) */
+ch_real ch_beat_breath[CH_BEAT_N] = {R(1.0), R(1.0), R(1.0), R(0.35), R(1.0), R(0.6), R(1.0), R(1.0), R(0.4), R(1.0)};
+/* (the snare 0.35, the inward snare 0.6, the crash 0.4: each was 3-5 dB over the kick's balance with CHIMERA, now
+ * within 0.5 dB; the hats already sat 1-2 dB under it) */
+static ch_real k_breath;                      /* (the sound being built's) */
+
 /* lung pressure (x the performer's) over [t0, t1], the glottis held open until the breath has gone (otherwise the
  * folds start to vibrate on the leftover pressure) */
 static void blow(ch_plan_t *o, ch_real t0, ch_real t1, ch_real level, ch_real abduction, ch_real tail)
 {
     g(o, t0, t1 + tail + R(0.02), R(0.02), R(0.03), R(6.0), CH_NAN)->targets[CH_ABDUCTION] = abduction;
-    g(o, t0 - R(0.01), t1, R(0.02), tail, R(1.0), CH_NAN)->targets[CH_BREATH] = level;
+    g(o, t0 - R(0.01), t1, R(0.02), tail, R(1.0), CH_NAN)->targets[CH_BREATH] = level * k_breath;
 }
 
 static const int K_JAW[] = {CH_JAW}, K_TBY[] = {CH_TB_Y}, K_TBY_JAW[] = {CH_TB_Y, CH_JAW}, K_LIP[] = {CH_LIP_AP};
@@ -130,7 +139,7 @@ static void inward_snare(ch_real accent, ch_plan_t *o)
     after(o, ch_oral("x", R(0.012), R(0.085), R(1.4), K_TBY, w, 1, o), R(0.008));
     g(o, R(-0.05), R(0.085), R(0.02), R(0.04), R(6.0), CH_NAN)->targets[CH_ABDUCTION] = R(0.5);
     /* draw the breath in behind the closure so the release rushes inward */
-    g(o, R(-0.035), R(0.085), R(0.015), R(0.05), R(2.0), CH_NAN)->targets[CH_BREATH] = R(-1.7) * accent;
+    g(o, R(-0.035), R(0.085), R(0.015), R(0.05), R(2.0), CH_NAN)->targets[CH_BREATH] = R(-1.7) * accent * k_breath;
 }
 
 static void tongue_click(ch_plan_t *o)
@@ -203,6 +212,9 @@ void ch_beat_build(int id, ch_real f0, ch_real len, ch_real accent, ch_real hit,
 {
     int i, start = o->n;
     ch_real off;
+    if (id < 0 || id >= CH_BEAT_N)
+        return;
+    k_breath = ch_beat_breath[id];
     switch (id) {
     case CH_BEAT_KICK: kick(accent, o); break;
     case CH_BEAT_HAT: hat(accent, o); break;

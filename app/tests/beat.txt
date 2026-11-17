@@ -53,6 +53,14 @@ expect beatbpm 126
 spin K2 5
 expect beatswing 10
 expect beatdirty 1
+# GLO shows the timings while it plays, and GLO again the beatbox
+tap GLO
+wait 100
+expect glo 1
+expect beatplay 1
+tap GLO
+wait 100
+expect glo 0
 tap PLAY
 wait 300
 expect beatplay 0

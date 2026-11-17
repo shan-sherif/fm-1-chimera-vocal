@@ -37,9 +37,9 @@ speaks and beatboxes, and a seal's and a songbird's airways join it.
 | :---: | :---: | :---: |
 | <img src="app/site/img/preview-words.gif" width="240" alt="The FM-1's screen singing Hello there, I am a voice made of air, a syllable a key: the head moving, the syllable sounding and the next"> | <img src="app/site/img/preview-vowel.gif" width="240" alt="The FM-1's screen in VOWEL mode: a held note while the knobs sweep the vowels, with their formants"> | <img src="app/site/img/preview-speak.gif" width="240" alt="The FM-1's screen while PLAY speaks the line: the head moving through it"> |
 
-| SEQ: the beatbox | LFO: the seal | LFO: the songbird |
-| :---: | :---: | :---: |
-| <img src="app/site/img/preview-beat.gif" width="240" alt="The FM-1's screen beatboxing Boots and cats: the head making each sound, its name, the playhead on the sixteen steps"> | <img src="app/site/img/preview-seal.gif" width="240" alt="The FM-1's screen playing the seal: a key held, its breath pulsing through its throat and mouth, then its falling trill"> | <img src="app/site/img/preview-bird.gif" width="240" alt="The FM-1's screen playing the songbird: a key held, its two valves opening, then its flute phrase"> |
+| ENV: a tune | SEQ: the beatbox | LFO: the seal | LFO: the songbird |
+| :---: | :---: | :---: | :---: |
+| <img src="app/site/img/preview-sing.gif" width="240" alt="The FM-1's screen singing slot 1 on CHIMERA's Dreamy: the head singing, the syllable, the melody's notes lit in turn"> | <img src="app/site/img/preview-beat.gif" width="240" alt="The FM-1's screen beatboxing Boots and cats: the head making each sound, its name, the playhead on the sixteen steps"> | <img src="app/site/img/preview-seal.gif" width="240" alt="The FM-1's screen playing the seal: a key held, its breath pulsing through its throat and mouth, then its falling trill"> | <img src="app/site/img/preview-bird.gif" width="240" alt="The FM-1's screen playing the songbird: a key held, its two valves opening, then its flute phrase"> |
 
 <sub>The firmware's own screen, from the host simulator (`tools/landing_anims.py`).</sub>
 
@@ -55,6 +55,9 @@ speaks and beatboxes, and a seal's and a songbird's airways join it.
   them on an emulated FM-1 in the browser, and sends them to yours over USB.
 - **Typing on the FM-1:** EDIT opens a word editor, a letter a key (A-Z or QWERTY in two rows), for the same eight
   slots.
+- **Tunes** (ENV): CHIMERA's Sing mode. The FM-1 sings a word slot by itself on one of its six tunes (Dreamy, Joyful,
+  Somber, Playful, Gentle, Twinkle), the words fitted to the tune's phrases as CHIMERA fits them, with tempo, key and
+  vibrato.
 - **Beatbox** (SEQ): CHIMERA's ten drum sounds on the keys, each one the simulated mouth making it as a beatboxer
   does (an ejective kick, clicks, an inward snare, a hummed bass), its seven beats, and a 16-step sequencer you can
   write on the FM-1, through CHIMERA's close-mic sound.
@@ -84,14 +87,36 @@ gestures). Words come from the Studio or are typed on the FM-1.
   calibrated phoneme and vowel targets by weight (`ArticPatch::blend`). The waveguide is the same size for every body,
   so no airway builder is needed and switching costs what it does now. Worth exploring for more varied voices if
   shifting pitch outside the FM-1 (an external pitch or formant shifter) doesn't already give enough variety.
-- **Sharper consonants:** a faster anatomy (more of it in RAM, skipped while the tongue is still) so it can run every
-  2nd control step (`ANAT_EVERY` in `app/app.c`; every 4th now).
+- **Sharper consonants:** the anatomy every 2nd control step (`ANAT_EVERY` in `app/app.c`; every 4th now). 0.8.0 made
+  it 35 % faster (each outline segment's reciprocals once, the nearest chunks first), but every 2nd still peaks at 98 %
+  of core 1 while it speaks (84 % while it sings), and the difference was hard to hear, in speech and in songs;
+  skipping it while the tongue is still, or more of it in RAM, could make room.
+- **CHIMERA's tone above 3 kHz:** the FM-1's voice is 3-9 dB brighter than CHIMERA's up there, in every body (its
+  sentences' spectra against CHIMERA's renders). A treble shelf (-7 dB from about 2.5 kHz, `shelf_g` in
+  `engine/ch_wave.c`; the debug page's K2) brings it twice as close but dulls the snare and crash, and on the FM-1's
+  speaker it is hard to hear, so it is off. A loss that grows with frequency inside the waveguide, as CHIMERA's airway
+  has, might match it better.
 - **More of the Bestiary** (LFO, ALGORITHM picking the creature): the alligator (a long tract, a chaotic source; most
   of its sound is below what the FM-1's speaker plays), the elephant (a 185 cm trunk with a lip reed at its base,
   needing a cheap delay-line trunk).
-- **CHIMERA's tunes:** its Sing mode's melodies (Dreamy, Joyful, Somber, Playful, Gentle, Twinkle; `src/song/tunes.ts`),
-  with its fitting of the words to them (`src/song/fit.ts`): the FM-1 would sing a word slot on a chosen tune by
-  itself (a button held with PLAY, say), in the current preset and body.
+- **A cat** (this port's own, not CHIMERA's: its Bestiary has none): a small airway (~4 cm throat, ~5 cm mouth, a
+  short nose) on the seal's waveguide, its dimensions from published measurements and tuned by ear (no CHIMERA render
+  to match). Calls: MEOW (the mouth opening, the pitch rising and falling, the lips rounding), MRRP (the trilled
+  greeting), PURR (a laryngeal buzz ~25 times a second on the breath in and out), HISS (open mouth, breath, no
+  voice). Cheap (about a third of the human's sections) and in the FM-1 speaker's range.
+- **Korean and Russian lyrics:** CHIMERA's other front ends (`phonetics/korean.rs`, `russian.rs`: Hangul a block a
+  note with Korean sound rules; Russian). On the FM-1 they would come from the Studio (the device types A-Z), and each
+  needs a native speaker's check.
+- **IPA input:** speaking or singing exact phonemes rather than English spelling (CHIMERA's IPA mode), from the
+  Studio; the device's editor types letters only.
+- **The tongue by hand:** CHIMERA's Play mode drags the tongue, lips and jaw in the head; the FM-1 reaches the tongue
+  body through the vowel pad (VOWEL) and the rest on the knobs. A page that places the tongue body directly (K1 front
+  / back, K2 up / down) would come closest.
+- **Readouts:** CHIMERA shows the airway's pressure and flow, the spectrum and the formants live; the debug page could
+  show a small formant or pressure readout.
+- **CHIMERA's other sources** (`sources/valves.rs`): the lip reed (the elephant's trumpet, a beatbox lip buzz), an
+  aerodynamic whistle (an elk's bugle), click trains (a sperm whale, a cicada), a cavitation bubble (a snapping
+  shrimp): for creatures CHIMERA hasn't added yet, or a beatbox bass.
 
 ## Two cores
 
@@ -137,8 +162,8 @@ Studio, SAVE on a preset, then a power cycle).
 
 | Path | What |
 | --- | --- |
-| `engine/` | The C port of CHIMERA's voice (MIT, Jameson Hodge's notice kept): `ch_voice.c` the literal audio rate (the reference), `ch_fast.c` the same rearranged for the FM-1 (the full-physics attempt), `ch_tract.c` the anatomy, `ch_wave.c` the FM-1's waveguide tract, `ch_control.c` the control rate (articulators, gestural score, source, contacts), `ch_speech.c` the English front end, planner and vowel pad (with `ch_phon_data.h`, generated from CHIMERA's tables, and `ch_dict_data.h`, ~480 CMUdict words), `ch_live.c` live singing, `ch_profile.c` the flat view's outlines, `ch_beat.c` the beatbox (its ten sounds, beats and sequencer), `ch_creature.c` the Bestiary (the creature voice and calls, the seal, the songbird's airway and syrinx, with `ch_syrinx_waves.h` its precomputed cycles), `ch_common.h` / `ch_str.h` what they share |
-| `app/` | The firmware, on fm1-base (started from its template): `app.c` (the voice on two cores, the words, the word editor, the pages, VOWEL, the presets, the beatbox, the Bestiary, the screens), `app.h`, `fm1.toml`; `dsp/voice_bodies.h` (CHIMERA's three bodies, male, female and child: their anatomy settings, speaking pitch and vowel ranges), `dsp/voice_male.h` (the male airway's full layout, for the lab's full-physics test), `dsp/words_default.h` (CHIMERA's presets as the first word slots); `web/studio.html` the Studio; `site/landing.md` the front page; `docs/MANUAL.md` and its screenshots; `tests/` the simulator's scripts |
+| `engine/` | The C port of CHIMERA's voice (MIT, Jameson Hodge's notice kept): `ch_voice.c` the literal audio rate (the reference), `ch_fast.c` the same rearranged for the FM-1 (the full-physics attempt), `ch_tract.c` the anatomy, `ch_wave.c` the FM-1's waveguide tract, `ch_control.c` the control rate (articulators, gestural score, source, contacts), `ch_speech.c` the English front end, planner and vowel pad (with `ch_phon_data.h`, generated from CHIMERA's tables, and `ch_dict_data.h`, ~480 CMUdict words), `ch_live.c` live singing, `ch_profile.c` the flat view's outlines, `ch_beat.c` the beatbox (its ten sounds, beats and sequencer), `ch_song.c` Sing mode's tunes and the fitting of words to them (its planner in `ch_speech.c`), `ch_creature.c` the Bestiary (the creature voice and calls, the seal, the songbird's airway and syrinx, with `ch_syrinx_waves.h` its precomputed cycles), `ch_common.h` / `ch_str.h` what they share |
+| `app/` | The firmware, on fm1-base (started from its template): `app.c` (the voice on two cores, the words, the word editor, the pages, VOWEL, the presets, the tunes, the beatbox, the Bestiary, the screens), `app.h`, `fm1.toml`; `dsp/voice_bodies.h` (CHIMERA's three bodies, male, female and child: their anatomy settings, speaking pitch and vowel ranges), `dsp/voice_male.h` (the male airway's full layout, for the lab's full-physics test), `dsp/words_default.h` (CHIMERA's presets as the first word slots); `web/studio.html` the Studio; `site/landing.md` the front page; `docs/MANUAL.md` and its screenshots; `tests/` the simulator's scripts |
 | `tools/` | `make_site.py` (the site: fm1-base's, plus the Studio, the emulator, CHIMERA's colours, the credits, the licence texts), `manual_shots.sh` (the manual's screenshots from the simulator), `landing_anims.py` (the front page's animated previews) |
 | `lab/` | The test bench: CHIMERA itself as a Rust library, the recorder, the C replay checks, the front end's checks, comparisons, cost estimates, the table generators |
 | `base/` | [fm1-base](https://github.com/charlesvestal/fm1-base) by Charles Vestal (MPL-2.0), with felucca-bsp in `base/bsp/`: plain folders, copied from upstream ([Based on fm1-base](#based-on-fm1-base)) |
@@ -191,7 +216,8 @@ The simulator's tests (`app/tests/`): `silence`, `rest`, `words`, `pages`, `scre
 `edit` (the word editor), `bodies` (male, female, child), `expression` (pressure, aftertouch, mod wheel, pitch bend),
 `crack` (no crack where a nasal ends a word),
 `beat` (the beatbox: pads, a beat, step editing, saving), `seal` (the Bestiary's seal: keys, calls, settings),
-`bird` (the Bestiary's songbird: keys, calls, settings),
+`bird` (the Bestiary's songbird: keys, calls, settings), `sing` (the tunes: a slot sung to its end, the tune, tempo
+and key kept),
 `stress` (three minutes of random playing).
 
 ## The lab

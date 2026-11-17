@@ -355,6 +355,22 @@ int ch_letter_to_sound(const char *w, ch_seg_t *out, int cap)
         if (!done)
             i++;
     }
+    /* the FM-1's addition (0.8.0): a final -s after a voiceless consonant is voiceless too ("tapes", "makes", "notes":
+     * CHIMERA's rules give /z/, which its dictionary never needs; between /p/ and a following /t/ the /z/ barely
+     * sounded, and "tapes" lost its hiss) */
+    if (ch_lts_device && n >= 2 && len >= 2 && w[len - 1] == 's' && !strcmp(out[n - 1].ipa, "z")) {
+        const char *v = out[n - 2].ipa;
+        if (!strcmp(v, "p") || !strcmp(v, "t") || !strcmp(v, "k") || !strcmp(v, "f") || !strcmp(v, "θ"))
+            seg_set(&out[n - 1], "s");
+        /* and a final -es after a hissing sound has its own vowel ("bushes", "boxes", "wishes": /ɪz/) */
+        else if (len >= 3 && w[len - 2] == 'e' && n < cap
+                 && (!strcmp(v, "s") || !strcmp(v, "z") || !strcmp(v, "ʃ") || !strcmp(v, "ʒ") || !strcmp(v, "tʃ") || !strcmp(v, "dʒ"))) {
+            out[n] = out[n - 1];
+            seg_init(&out[n - 1], "ɪ");
+            out[n - 1].stress = 0;
+            n++;
+        }
+    }
     return n;
 }
 
@@ -1466,4 +1482,118 @@ void ch_plan_note_off(const ch_syl_t *syl, ch_real midi, ch_plan_t *out)
     o.f0 = hz;
     o.intonation = CH_INTON_FLAT;
     ch_plan_utterance(segs, n, &o, out);
+}
+
+/* ------------------------------------------------------------------ plan_song (a phrase) --- */
+/* sing.rs plan_song, a phrase at a time (ch_song.h): its onsets and codas sung (a sung consonant 0.8 of its spoken
+ * length, at its note's pitch), squeezed when a note is too short (fit), each vowel on its beat, the phrase's last one
+ * held to its end less a breath; one utterance for the phrase, its vibrato on the vowels held over 0.3 s */
+#include "ch_song.h"
+#define MIN_VOWEL R(0.05)
+#define MIN_CONSONANT R(0.012)
+
+static ch_real seg_total(const ch_seg_t *s, int n)
+{
+    ch_real t = 0;
+    int i;
+    for (i = 0; i < n; i++)
+        t += is_nan(s[i].dur) ? 0 : s[i].dur;
+    return t;
+}
+
+/* the consonants between a vowel and the next one, into `span` (a vowel keeps MIN_VOWEL) */
+static void song_fit(ch_seg_t *a, int na, ch_seg_t *b, int nb, ch_real span)
+{
+    const ch_real cons = seg_total(a, na) + seg_total(b, nb), room = span - MIN_VOWEL;
+    ch_real scale;
+    int i;
+    if (cons <= room || cons <= 0)
+        return;
+    scale = mx(0, room) / cons;
+    for (i = 0; i < na; i++)
+        a[i].dur = mx(MIN_CONSONANT, (is_nan(a[i].dur) ? 0 : a[i].dur) * scale);
+    for (i = 0; i < nb; i++)
+        b[i].dur = mx(MIN_CONSONANT, (is_nan(b[i].dur) ? 0 : b[i].dur) * scale);
+}
+
+static int consonants_at(const ch_seg_t *c, int n, ch_real hz, ch_seg_t *out)
+{
+    int i;
+    consonants(c, n, R(0.8), out);
+    for (i = 0; i < n; i++)
+        out[i].f0 = hz;
+    return n;
+}
+
+#define SONG_PH 24                            /* notes a phrase: a line is cut to 1.5x the tune's phrase (CHIMERA's at most 10 notes), so ~15; a longer one is planned in parts */
+/* a held note: the fitting's, or a melisma the lyric wrote ("-") */
+#define HELD(k) (notes[k].held || syls[notes[k].syl].melisma)
+int ch_song_plan_phrase(const ch_sung_t *notes, int n, int i, const ch_syl_t *syls, const ch_real *times, ch_real t0,
+                        ch_real vibrato, ch_plan_t *out)
+{
+    static ch_seg_t on[SONG_PH][CH_ONSET_MAX], co[SONG_PH][CH_CODA_MAX], segs[CH_SEG_MAX];
+    static ch_real span_a[SONG_PH], span_b[SONG_PH];
+    int non[SONG_PH], nco[SONG_PH], j = i, k, ns = 0, nsp = 0;
+    ch_real reserve, last_end, first_onset;
+    ch_plan_opts_t o;
+    if (i >= n)
+        return n;
+    while (j < n - 1 && !notes[j].phrase_end && j - i < SONG_PH - 1)
+        j++;
+    for (k = i; k <= j; k++) {
+        const ch_real hz = ch_midi_hz((ch_real)notes[k].midi);
+        const ch_syl_t *s = &syls[notes[k].syl];
+        int b = k;
+        non[k - i] = HELD(k) ? 0 : consonants_at(s->onset, s->n_onset, hz, on[k - i]);
+        while (b > 0 && HELD(b))       /* the coda of the syllable a melisma chain started */
+            b--;
+        nco[k - i] = k < j && HELD(k + 1) ? 0 : consonants_at(syls[notes[b].syl].coda, syls[notes[b].syl].n_coda, hz, co[k - i]);
+    }
+    reserve = j == n - 1 ? R(0.05) : R(0.12);
+    last_end = times[j + 1] - mn(reserve, R(0.3) * (times[j + 1] - times[j]));
+    for (k = i; k <= j; k++) {
+        if (k < j)
+            song_fit(co[k - i], nco[k - i], on[k + 1 - i], non[k + 1 - i], times[k + 1] - times[k]);
+        else
+            song_fit(co[k - i], nco[k - i], 0, 0, last_end - times[k]);
+    }
+    first_onset = seg_total(on[0], non[0]);
+    for (k = i; k <= j; k++) {
+        const ch_real hz = ch_midi_hz((ch_real)notes[k].midi);
+        const ch_syl_t *s = &syls[notes[k].syl];
+        const int next_melisma = k < j && HELD(k + 1);
+        const ch_real note_end = k < j ? times[k + 1] - seg_total(on[k + 1 - i], non[k + 1 - i]) : last_end;
+        const ch_real vdur = mx(R(0.02), note_end - times[k] - seg_total(co[k - i], nco[k - i]));
+        const char *a, *b;
+        int q;
+        for (q = 0; q < non[k - i] && ns < CH_SEG_MAX; q++)
+            segs[ns++] = on[k - i][q];
+        if (diphthong_parts(s->nucleus.ipa, &a, &b) && !next_melisma) {
+            if (ns + 2 <= CH_SEG_MAX) {
+                nucleus_part(&segs[ns++], a, vdur * R(0.8), hz);
+                nucleus_part(&segs[ns++], b, vdur * R(0.2), hz);
+            }
+        } else if (ns < CH_SEG_MAX) {
+            nucleus_part(&segs[ns++], diphthong_parts(s->nucleus.ipa, &a, &b) ? a : s->nucleus.ipa, vdur, hz);
+        }
+        for (q = 0; q < nco[k - i] && ns < CH_SEG_MAX; q++)
+            segs[ns++] = co[k - i][q];
+        span_a[nsp] = times[k];
+        span_b[nsp++] = times[k] + vdur;
+    }
+    if (ns) {
+        /* the planner lays segments out from t0 + 0.06: start so the first vowel lands on its beat */
+        ch_plan_defaults(&o);
+        o.t0 = t0 + times[i] - first_onset - R(0.06);
+        o.f0 = ch_midi_hz((ch_real)notes[i].midi);
+        o.intonation = CH_INTON_FLAT;
+        o.sung = 1;
+        ch_plan_utterance(segs, ns, &o, out);
+        for (k = 0; k < nsp; k++)
+            if (span_b[k] - span_a[k] > R(0.3)) {
+                ch_gesture_t *g = gesture(out, t0 + span_a[k] + R(0.22), t0 + span_b[k], R(0.3), R(0.06), R(4.0));
+                g->targets[CH_VIBRATO] = vibrato;
+            }
+    }
+    return j + 1;
 }

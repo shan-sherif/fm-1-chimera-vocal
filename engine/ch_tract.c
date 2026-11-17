@@ -61,10 +61,15 @@ static void append(ch_line *l, const ch_v2 *pts, int n, int skip_first)
         push(l, pts[i]);
 }
 
-/* each chunk's bounding box, once the line is built (the rays then skip whole chunks) */
+/* each chunk's bounding box, once the line is built (the rays then skip whole chunks); each segment's reciprocals */
 static void line_boxes(ch_line *l)
 {
     int c, i;
+    for (i = 0; i + 1 < l->n; i++) {
+        const ch_real ex = l->p[i + 1].x - l->p[i].x, ey = l->p[i + 1].y - l->p[i].y, l2 = ex * ex + ey * ey;
+        l->il2[i] = l2 > R(1e-12) ? R(1.0) / l2 : 0;
+        l->slope[i] = ey != 0 ? ex / ey : 0;
+    }
     l->nc = l->n > 1 ? (l->n - 1 + CH_CHUNK - 1) / CH_CHUNK : 0;
     for (c = 0; c < l->nc; c++) {
         int i0 = c * CH_CHUNK, i1 = i0 + CH_CHUNK < l->n - 1 ? i0 + CH_CHUNK : l->n - 1;
@@ -227,24 +232,39 @@ CH_INLINE ch_real box_d2(const ch_real *b, ch_real px, ch_real py)
 CH_IN_RAM CH_PART static proj_t project_on(const ch_line *pl, const ch_real *cum, ch_real px, ch_real py)
 {
     proj_t r;
-    ch_real best = INF, bs = 0, sign = 1;
-    int c, bseg = 0;
+    ch_real best = INF, bs = 0, sign = 1, bd[CH_MAXPTS / CH_CHUNK + 1];
+    uint8_t order[CH_MAXPTS / CH_CHUNK + 1];
+    int c, k, bseg = 0;
+    /* the chunks nearest first (0.8.0: the best falls sooner, more are skipped). Among equally near segments the
+     * first in the line must win, as CHIMERA's: a later chunk only wins when strictly nearer, an earlier one when
+     * as near (the tie test below) */
     for (c = 0; c < pl->nc; c++) {
-        int i, i0 = c * CH_CHUNK, i1 = i0 + CH_CHUNK < pl->n - 1 ? i0 + CH_CHUNK : pl->n - 1;
-        if (box_d2(pl->box[c], px, py) >= best)
+        int j = c;
+        bd[c] = box_d2(pl->box[c], px, py);
+        while (j > 0 && bd[order[j - 1]] > bd[c]) {
+            order[j] = order[j - 1];
+            j--;
+        }
+        order[j] = (uint8_t)c;
+    }
+    for (k = 0; k < pl->nc; k++) {
+        const int c2 = order[k];
+        int i, i0 = c2 * CH_CHUNK, i1 = i0 + CH_CHUNK < pl->n - 1 ? i0 + CH_CHUNK : pl->n - 1;
+        if (bd[c2] > best)
             continue;
         for (i = i0; i < i1; i++) {
             ch_real ax = pl->p[i].x, ay = pl->p[i].y, ex = pl->p[i + 1].x - ax, ey = pl->p[i + 1].y - ay;
-            ch_real l2 = ex * ex + ey * ey, t, qx, qy, d;
+            ch_real l2, t, qx, qy, d;
             COUNT(CN_PROJ);
-            if (l2 < R(1e-12))
+            if (pl->il2[i] == 0)
                 continue;
-            t = ((px - ax) * ex + (py - ay) * ey) / l2;
+            l2 = ex * ex + ey * ey;
+            t = ((px - ax) * ex + (py - ay) * ey) * pl->il2[i];
             t = t < 0 ? 0 : t > 1 ? 1 : t;
             qx = ax + ex * t;
             qy = ay + ey * t;
             d = (px - qx) * (px - qx) + (py - qy) * (py - qy);   /* squared: one root at the end */
-            if (d < best) {
+            if (d < best || (d == best && i < bseg)) {
                 best = d;
                 bs = cum[i] + t * SQRT(l2);
                 sign = ex * (py - ay) - ey * (px - ax) < 0 ? R(1.0) : R(-1.0);
@@ -275,12 +295,25 @@ static ch_v2 point_along(const ch_line *pl, const ch_real *cum, int n_cum, ch_re
  * can't flip the inside test; a chunk that does neither is skipped whole. */
 CH_IN_RAM CH_PART static ch_real signed_gap(const ch_line *pl, ch_real px, ch_real py)
 {
-    ch_real best = INF, d;
-    int inside = 0, c;
+    ch_real best = INF, d, bd[CH_MAXPTS / CH_CHUNK + 1];
+    uint8_t order[CH_MAXPTS / CH_CHUNK + 1];
+    int inside = 0, c, k;
+    /* the chunks nearest first (the best distance falls sooner, so more chunks are skipped; the inside test
+     * counts every crossing whatever the order) */
     for (c = 0; c < pl->nc; c++) {
-        const ch_real *b = pl->box[c];
-        int i, i0 = c * CH_CHUNK, i1 = i0 + CH_CHUNK < pl->n - 1 ? i0 + CH_CHUNK : pl->n - 1;
-        int near = box_d2(b, px, py) < best, spans = b[1] <= py && b[3] > py;
+        int j = c;
+        bd[c] = box_d2(pl->box[c], px, py);
+        while (j > 0 && bd[order[j - 1]] > bd[c]) {
+            order[j] = order[j - 1];
+            j--;
+        }
+        order[j] = (uint8_t)c;
+    }
+    for (k = 0; k < pl->nc; k++) {
+        const int c2 = order[k];
+        const ch_real *b = pl->box[c2];
+        int i, i0 = c2 * CH_CHUNK, i1 = i0 + CH_CHUNK < pl->n - 1 ? i0 + CH_CHUNK : pl->n - 1;
+        int near = bd[c2] < best, spans = b[1] <= py && b[3] > py;
         if (!near && !spans)
             continue;
         for (i = i0; i < i1; i++) {
@@ -288,8 +321,8 @@ CH_IN_RAM CH_PART static ch_real signed_gap(const ch_line *pl, ch_real px, ch_re
             ch_real ex = bx - ax, ey = by - ay;
             COUNT(CN_GAP);
             if (near) {
-                ch_real l2 = ex * ex + ey * ey, t, dx, dy, d2;
-                t = l2 > R(1e-12) ? ((px - ax) * ex + (py - ay) * ey) / l2 : 0;
+                ch_real t, dx, dy, d2;
+                t = ((px - ax) * ex + (py - ay) * ey) * pl->il2[i];
                 t = t < 0 ? 0 : t > 1 ? 1 : t;
                 dx = px - ax - ex * t;
                 dy = py - ay - ey * t;
@@ -297,7 +330,7 @@ CH_IN_RAM CH_PART static ch_real signed_gap(const ch_line *pl, ch_real px, ch_re
                 if (d2 < best)
                     best = d2;
             }
-            if ((ay > py) != (by > py) && px < ax + ((py - ay) * ex) / ey)
+            if ((ay > py) != (by > py) && px < ax + (py - ay) * pl->slope[i])
                 inside = !inside;
         }
     }
@@ -459,6 +492,9 @@ static void grid_push(ch_tract_t *t, const measured_t *m, uint8_t region)
 }
 
 /* HumanVocalTract::compute, the acoustic parts */
+#ifndef CH_PROF
+#define CH_PROF(stage)                        /* (lab/port/tract_prof.c: the anatomy's stages timed) */
+#endif
 static void compute(ch_tract_t *t, const ch_real *a)
 {
     const ch_real k = t->k;
@@ -473,6 +509,7 @@ static void compute(ch_tract_t *t, const ch_real *a)
     ch_v2 nrm;
 
 #define J(x, y) rotate_about(P(t, R(x), R(y)), t->condyle, phi)
+    CH_PROF(0);
     /* ---- jaw (rotation about the condyle) */
     jaw_ref = P(t, R(6.95), R(7.75));
     jaw_r = dist(t->condyle, jaw_ref);
@@ -498,6 +535,7 @@ static void compute(ch_tract_t *t, const ch_real *a)
             t->vel_oral[i] = lerpv(t->vel_oral[i], t->palate[0], (R(1.0) - u) * (R(1.0) - u));
     }
 
+    CH_PROF(1);
     /* ---- outer contour: pharyngeal wall to below the uvula, velum, palate, incisors, upper lip */
     t->outer.n = 0;
     uv_y = t->vel_oral[10].y - R(0.3) * k;
@@ -537,6 +575,7 @@ static void compute(ch_tract_t *t, const ch_real *a)
     bezier3(ul_base, add(ul_base, v2(R(0.3) * k + prot * R(0.4), R(0.05) * k)), add(ul_edge, v2(R(-0.35) * k, R(0.12) * k)), ul_edge, 7, t->upper_lip_in);
     append(&t->outer, t->upper_lip_in, 7, 0);
 
+    CH_PROF(2);
     /* ---- tongue */
     r = t->tongue_radius * k;
     b = P(t, a[CH_TB_X], a[CH_TB_Y]);
@@ -630,6 +669,7 @@ static void compute(ch_tract_t *t, const ch_real *a)
     line_boxes(&t->outer);
     line_boxes(&t->inner);
 
+    CH_PROF(3);
     /* ---- grid */
     t->n_grid = 0;
     y_epi_top = glottis.y + R(2.4) * k * t->pharynx;
@@ -674,6 +714,7 @@ static void compute(ch_tract_t *t, const ch_real *a)
     }
     lip_w = (R(1.1) + (t->lip_width - R(1.1)) * spread_w) * k;
 
+    CH_PROF(4);
     /* ---- soft-tissue contact model: near the oral roof the gap is the distance to the tongue surface */
     t->roof.n = 0;
     for (i = roof_start; i <= roof_end; i++)
@@ -751,6 +792,7 @@ static void compute(ch_tract_t *t, const ch_real *a)
         }
     }
 
+    CH_PROF(5);
     /* ---- areas */
     {
         ch_real teeth_x = t->palate[t->n_palate - 1].x;
@@ -1042,6 +1084,7 @@ static void commit(ch_tract_t *t, const ch_real *a, ch_real dt)
 {
     COUNT(CN_STEPS);
     compute(t, a);
+    CH_PROF(6);
     fill(t, a, 0, t->pharynx_length, t->ph_areas, t->ph_min, t->n_ph);
     fill(t, a, t->pharynx_length, t->lip_s, t->or_areas, t->or_min, t->n_or);
     if (dt > 0 && t->have_base) {
@@ -1050,7 +1093,9 @@ static void commit(ch_tract_t *t, const ch_real *a, ch_real dt)
     }
     t->ph_len = t->pharynx_length;
     t->or_len = t->lip_s - t->pharynx_length;
+    CH_PROF(7);
     update_noise(t);
+    CH_PROF(8);
 }
 
 void ch_tract_apply(ch_tract_t *t, const ch_real a[CH_NARTIC], ch_real dt)

@@ -101,3 +101,12 @@ spin ALGO -1
 wait 300
 tap LFO
 wait 600
+# CHIMERA's tunes (ENV): slot 1 sung on Dreamy, mid-song
+tap ENV
+wait 300
+tap PLAY
+wait 2300
+shot sing.png
+tap PLAY
+tap ENV
+wait 600

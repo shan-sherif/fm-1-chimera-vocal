@@ -24,6 +24,8 @@ typedef struct {
     ch_real latency;             /* the planned hit to the acoustic onset (s): scheduled this much earlier */
 } ch_beat_info_t;
 extern const ch_beat_info_t CH_BEAT_SOUNDS[CH_BEAT_N];
+/* each sound's breath on the FM-1, a factor (lab-tuned; ch_beat.c) */
+extern ch_real ch_beat_breath[CH_BEAT_N];
 
 #define CH_BEAT_MAX_G 16         /* the most gestures a sound builds */
 #define CH_BEAT_NOTE 40          /* the hum's note when a step has none (MIDI E2) */

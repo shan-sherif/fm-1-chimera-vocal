@@ -37,6 +37,7 @@ static uint8_t set_dirty;                /* changed since the last save: SAVE is
 #include "ch_control.h"
 #include "ch_live.h"
 #include "ch_beat.h"                         /* CHIMERA's beatboxer (SEQ, 0.7.0) */
+#include "ch_song.h"                         /* CHIMERA's Sing mode's tunes (ENV, 0.8.0) */
 #include "voice_male.h"
 #include "voice_bodies.h"                   /* CHIMERA's three bodies: male, female, child (ALGORITHM) */
 #include "ch_creature.h"                    /* and its Bestiary's seal, the fourth (0.7.0) */
@@ -82,7 +83,11 @@ static int two_cores;
  * speaks (0.0.5: 210 %), every 4th fits (0.0.7 onwards: under 70 % at peak). A faster anatomy could try 2 here (the lab
  * measures any: replay --anat-every=N) */
 #define ANAT_EVERY 4
-static const uint8_t anat_every = ANAT_EVERY;
+static volatile uint8_t anat_every = ANAT_EVERY;   /* (the debug page's K1 tries 4, 2 or 1 until power-off: 0.8.0) */
+/* the debug page's K2 (0.8.0, until power-off): the human voice's treble shelf, -7 dB over ~2.5 kHz (ch_wave.h), to
+ * hear against the voice without it */
+static volatile uint8_t shelf_on;
+#define SHELF_G (0.4467f - 1.0f)
 /* the timings, on plat_ticks24's clock (24 MHz): the last block's, the sum and the worst since the screen read them */
 static volatile uint32_t c1_sum, c1_peak, c0_sum, c0_peak, n_blk, c1_last;
 static float gain_now;                       /* glides to MASTER: no step at a block's edge */
@@ -100,8 +105,13 @@ typedef struct {
     int16_t at[MB_R];
     int n_release;
     uint8_t clear;
+    uint8_t song;                            /* a sung phrase (the SING page): 1 the song's first (its clock starts at the
+                                              * take), 2 a later one; its times are from the song's start */
 } mail_t;
 static mail_t mb PLAT_POOL, pend PLAT_POOL;
+static float song_clock0;                    /* (the audio's) the song's start on the voice's clock */
+static volatile float song_now = -1.0f;      /* the song's time (s), for the main loop; -1: none started */
+static volatile uint8_t song_on;             /* (the audio's) a song is running: its clock is published, no rest */
 static volatile uint8_t mb_full;
 
 /* Notes, audio interrupt (MIDI in) -> main loop: a small ring */
@@ -113,6 +123,10 @@ static volatile uint8_t nq_note[NQ], nq_vel[NQ];   /* velocity 0: off */
 static struct {
     uint8_t on, slot, edit, cur, dirty, play;
 } bt;
+/* the SING page (ENV, 0.8.0, below before input): on, singing, unsaved */
+static struct {
+    uint8_t on, playing, dirty;
+} sg;
 
 static ch_beat_player_t seq PLAT_POOL;      /* the beatbox's sequencer (the audio interrupt's) */
 static ch_live_t live PLAT_POOL;            /* the main loop's: the lyrics' syllables and the cursor */
@@ -129,6 +143,7 @@ static void seal_on(int32_t note);
 static void seal_off(int32_t note);
 static void creature_pick(int32_t e);
 static void creatures_load(void);
+static void song_load(void);
 static void beats_load(void);
 static void vowel_off(int32_t note);
 static void vp_take(void);
@@ -248,6 +263,7 @@ __attribute__((section(".c1_text"))) static void tract_job(uint32_t which)
         c1_last = PLAT_FAR(plat_ticks24)() - t0;
         return;
     }
+    wave.shelf_g = shelf_on && !seal_audio ? SHELF_G : 0.0f;
     for (s = 0; s < NSUB; s++) {
         step_t *d = &steps[which][s];
         ch_wave_block(&wave, d->has_shape ? &d->shape : 0, d->steps, &d->g, d->p_lung);
@@ -287,6 +303,7 @@ static void mb_post(void)
     mb = pend;
     pend.n = pend.n_release = 0;
     pend.clear = 0;
+    pend.song = 0;
     mb_full = 1;
 }
 
@@ -309,6 +326,8 @@ static void live_on(int32_t note, uint32_t vel)
         beat_note(note);
         return;
     }
+    if (sg.on)                                /* the SING page: the tune sings, not the keys */
+        return;
     if (body_cur == BODY_SEAL) {              /* the seal: its pitch */
         seal_on(note);
         return;
@@ -325,7 +344,7 @@ static void live_on(int32_t note, uint32_t vel)
 
 static void live_off(int32_t note)
 {
-    if (bt.on)
+    if (bt.on || sg.on)
         return;
     if (body_cur == BODY_SEAL) {
         seal_off(note);
@@ -380,13 +399,20 @@ static void mb_take(void)
         return;
     if (mb.clear)
         ch_score_clear(&ctl.score);
+    if (mb.song == 1) {
+        song_clock0 = ctl.clock;
+        song_on = 1;
+    } else if (mb.clear) {                   /* (anything else that clears the score ends the song) */
+        song_on = 0;
+    }
     for (i = 0; i <= mb.n; i++) {
         while (r < mb.n_release && mb.at[r] <= i)
             ch_score_release(&ctl.score, mb.release[r++], ctl.clock);
         if (i < mb.n) {
             ch_gesture_t g = mb.g[i];
-            g.t0 += ctl.clock;
-            g.t1 += ctl.clock;
+            const float base = mb.song ? song_clock0 : ctl.clock;
+            g.t0 += base;
+            g.t1 += base;
             ch_score_add(&ctl.score, &g);
         }
     }
@@ -629,8 +655,9 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
      * the targets of the block before the rest (one block, 5.8 ms, before the new ones arrive). v0.0.1 / v0.0.2 ran
      * the whole voice in silence too: on the FM-1 that kept the audio overloaded (a constant sound). */
     beat_tick();                             /* (before the rest: a beat playing wakes the voice and keeps it awake) */
+    song_now = song_on ? ctl.clock - song_clock0 : -1.0f;
     if (resting && (seal_audio ? cvoice.gate_target <= 0.0f && cvoice.call < 0
-                               : ctl.score.n == 0 && ctl.gate_target <= 0.0f && !seq.playing)) {
+                               : ctl.score.n == 0 && ctl.gate_target <= 0.0f && !seq.playing && !song_on)) {
         for (i = 0; i < 2u * n; i++)
             lr[i] = 0;
         n_blk++;                                 /* (a resting block costs nothing: it counts as 0 %) */
@@ -690,7 +717,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
 #endif
         /* rest once the score has played out, the breath gone and the output below 16-bit silence for a while */
         if ((seal_audio ? cvoice.gate_target <= 0.0f && cvoice.call < 0 && cvoice.gate < 1e-4f
-                        : ctl.score.n == 0 && !mb_full && ctl.gate_target <= 0.0f && ctl.gate < 1e-4f && !seq.playing)
+                        : ctl.score.n == 0 && !mb_full && ctl.gate_target <= 0.0f && ctl.gate < 1e-4f && !seq.playing && !song_on)
             && peak < 2e-6f) {
             if (++quiet_blocks >= QUIET_BLOCKS)
                 resting = 1;
@@ -737,6 +764,8 @@ void app_init(void)
     preset_apply(set.preset);
     beats_load();
     creatures_load();
+    song_load();
+    sg.on = sg.playing = sg.dirty = 0;
     bt.on = bt.edit = bt.play = bt.dirty = bt.slot = bt.cur = 0;
     two_cores = plat_cpu2_set(1) == 0;       /* else one core: the waveguide runs here too */
 }
@@ -2159,6 +2188,254 @@ static void seal_page_say(void)
     app_say(CRE->name, t);
 }
 
+/* ---------------------------------------------------------------------- the tunes --- */
+/* ENV (0.8.0): CHIMERA's Sing mode. PLAY sings the word slot on a tune (CHIMERA's six: the words fitted to its phrases,
+ * engine/ch_song.c) and stops it; with no words it sings "la". PRESET picks the tune, K1 its tempo, K2 its key, K3 the
+ * vibrato, K4 the word slot; ALGORITHM the body (each sings in its octave). The song is planned a phrase at a time,
+ * a second before it is due (a whole song is more gestures than the mailbox carries). SAVE keeps the choices
+ * (OBJ_SONG); ENV or HOME leaves */
+#define SONG_MAGIC 0x31474E53u                /* "SNG1" */
+static struct {
+    uint32_t magic;
+    uint8_t tune, tempo, vibrato;             /* the tune; the tempo in % of its own (50..150); the vibrato (cents) */
+    int8_t key;                               /* semitones (-12..12) */
+} sng;
+static ch_syl_t sg_syl[CH_SYL_MAX] PLAT_POOL;
+static ch_sung_t sg_note[CH_SONG_MAX] PLAT_POOL;
+static float sg_time[CH_SONG_MAX + 1];
+static int sg_n, sg_next, sg_nsyl;
+static char sg_la[CH_SONG_MAX * 3];
+#define SONG_LEAD 0.35f                       /* the first beat after PLAY (s: CHIMERA's) */
+
+static void song_load(void)
+{
+    if (plat_store_load(OBJ_SONG, &sng, sizeof sng) == (int)sizeof sng && sng.magic == SONG_MAGIC && sng.tune < CH_NTUNES
+        && sng.tempo >= 50 && sng.tempo <= 150 && sng.key >= -12 && sng.key <= 12 && sng.vibrato <= 100)
+        return;
+    sng.magic = SONG_MAGIC;
+    sng.tune = 0;
+    sng.tempo = 100;
+    sng.key = 0;
+    sng.vibrato = 35;
+}
+
+static void song_say(const char *what)
+{
+    app_say(what, CH_TUNES[sng.tune].name);
+}
+
+static void song_stop(void)
+{
+    if (!sg.playing)
+        return;
+    sg.playing = 0;
+    pend.n = pend.n_release = 0;               /* the score cleared: the song ends where it is */
+    pend.clear = 1;
+    pend.song = 0;
+    mb_post();
+}
+
+/* the next phrase into the mailbox, when it is due within a second (and the mailbox is free) */
+static void song_tick(void)
+{
+    const float now = song_now;
+    ch_plan_t plan;
+    if (!sg.playing)
+        return;
+    if (sg_next >= sg_n) {                    /* all sent: done when the last note has ended */
+        if (now >= 0.0f && now > SONG_LEAD + sg_time[sg_n] + 0.4f) {
+            sg.playing = 0;
+            ui.redraw = 1;
+        }
+        return;
+    }
+    if (mb_full || pend.n || (sg_next > 0 && (now < 0.0f || now + 1.0f < SONG_LEAD + sg_time[sg_next])))
+        return;
+    plan.g = pend.g;
+    plan.cap = MB_G;
+    plan.n = 0;
+    plan.dropped = 0;
+    {
+        const int first = sg_next == 0;
+        sg_next = ch_song_plan_phrase(sg_note, sg_n, sg_next, sg_syl, sg_time, SONG_LEAD, (float)sng.vibrato, &plan);
+        pend.n = plan.n;
+        pend.n_release = 0;
+        pend.clear = (uint8_t)first;          /* (the first clears what was in the score) */
+        pend.song = (uint8_t)(first ? 1 : 2);
+    }
+    mb_post();
+}
+
+static void song_start(void)
+{
+    const ch_tune_t *t = &CH_TUNES[sng.tune];
+    const int oct = body_hum == 0 ? t->oct_male : body_hum == 1 ? t->oct_female : t->oct_child;
+    sg_nsyl = ch_lyrics(lyric, words_lookup, 0, sg_syl, CH_SYL_MAX);
+    if (!sg_nsyl) {                           /* no words: "la" on every note (fit.ts la) */
+        int k, q, i = 0;
+        for (k = 0; k < t->n_phrases; k++) {
+            for (q = 0; q < t->phrase_len[k] && i + 4 < (int)sizeof sg_la; q++) {
+                memcpy(sg_la + i, "la ", 3);
+                i += 3;
+            }
+            if (i > 0)
+                sg_la[i - 1] = '\n';
+        }
+        sg_la[i] = 0;
+        sg_nsyl = ch_lyrics(sg_la, 0, 0, sg_syl, CH_SYL_MAX);
+    }
+    sg_n = ch_song_fit(t, sg_syl, sg_nsyl, 12 * oct + sng.key, sg_note, CH_SONG_MAX);
+    if (!sg_n)
+        return;
+    ch_song_times(sg_note, sg_n, t->bpm * (float)sng.tempo / 100.0f, sg_time);
+    sg_next = 0;
+    sg.playing = 1;
+    live.sounding = 0;
+    live.n_keys = 0;
+    voice_note = -1;
+    song_tick();                              /* (the first phrase now) */
+}
+
+/* the note sounding now (-1: none), from the song's clock */
+static int song_note_now(void)
+{
+    const float t = song_now - SONG_LEAD;
+    int k;
+    if (!sg.playing || song_now < 0.0f || t < 0.0f)
+        return -1;
+    for (k = 0; k < sg_n; k++)
+        if (t < sg_time[k + 1])
+            return k;
+    return -1;
+}
+
+/* the debug page's K1 and K2, over whichever page is beneath it (not kept): the anatomy's rate, the treble shelf.
+ * Returns 1 when the turn was theirs */
+static int debug_knob(uint32_t k, int32_t e)
+{
+    if (!page_debug)
+        return 0;
+    if (k == EN_K1) {
+        static const uint8_t R[3] = {4, 2, 1};
+        int i = anat_every == 4 ? 0 : anat_every == 2 ? 1 : 2;
+        i = ((i + (e > 0 ? 1 : -1)) % 3 + 3) % 3;
+        anat_every = R[i];
+        app_say("ANATOMY", anat_every == 1 ? "EVERY STEP" : anat_every == 2 ? "EVERY 2ND STEP" : "EVERY 4TH STEP");
+        return 1;
+    }
+    if (k == EN_K2) {
+        shelf_on = (uint8_t)(e > 0);
+        app_say("TREBLE SHELF", shelf_on ? "ON: -7 DB" : "OFF");
+        return 1;
+    }
+    return 0;
+}
+
+/* GLO: the debug page (the timings) / the page under it, from anywhere but the word editor */
+static void debug_toggle(void)
+{
+    page_debug = (uint8_t)!page_debug;
+    lcd_fill(0, 0, 240, 240, C_BLACK);
+    ui.redraw = 1;
+}
+
+static void song_open(void)
+{
+    if (vowel_mode)
+        mode_set(0);
+    pend.n = pend.n_release = 0;
+    pend.clear = 1;
+    live.sounding = 0;
+    live.n_keys = 0;
+    voice_note = -1;
+    mb_post();
+    sg.on = 1;
+    sg.playing = 0;
+    vp_send();
+    song_say("SING");
+}
+
+static void song_close(void)
+{
+    song_stop();
+    sg.on = 0;
+    app_say(sg.dirty ? "SING UNSAVED" : "WORDS", sg.dirty ? "SAVE IN SING" : "KEYS SING");
+}
+
+static void sg_input(uint32_t keys, uint32_t btn, uint32_t now)
+{
+    uint32_t k;
+    int32_t e;
+    for (k = 0; k < NB; k++) {
+        uint32_t bit = 1u << k;
+        if (!(btn & bit) || (ui.btn & bit))
+            continue;
+        if (k == B_PLAY) {
+            if (sg.playing) {
+                song_stop();
+                song_say("STOP");
+            } else {
+                song_start();
+                song_say(sg.playing ? "SINGING" : "NO WORDS");
+            }
+        } else if (k == B_SAVE) {
+            if (plat_store_save(OBJ_SONG, &sng, sizeof sng) == 0 && plat_store_save(OBJ_SETTINGS, &set, sizeof set) == 0) {
+                sg.dirty = 0;
+                set_dirty = 0;
+                song_say("SAVED");
+            } else {
+                app_say("SAVE", "FAILED");
+            }
+        } else if (k == B_ENV || k == B_HOME) {
+            song_close();
+        } else if (k == B_GLO) {
+            debug_toggle();
+        }
+    }
+    for (k = 0; k < NE; k++) {
+        if ((e = plat_enc((int)k)) == 0)
+            continue;
+        ui.turns[k] += e;
+        ui.turned_at[k] = now;
+        ui.redraw = 1;
+        if (debug_knob(k, e)) {
+        } else if (k == EN_PRESET) {          /* the tune (from the next PLAY) */
+            sng.tune = (uint8_t)(((sng.tune + e) % CH_NTUNES + CH_NTUNES) % CH_NTUNES);
+            sg.dirty = 1;
+            song_say("TUNE");
+        } else if (k == EN_K1) {              /* tempo, x0.5 .. x1.5 */
+            sng.tempo = (uint8_t)clamp(sng.tempo + 5 * e, 50, 150);
+            sg.dirty = 1;
+        } else if (k == EN_K2) {              /* key, -12 .. +12 semitones */
+            sng.key = (int8_t)clamp(sng.key + e, -12, 12);
+            sg.dirty = 1;
+        } else if (k == EN_K3) {              /* vibrato, 0 .. 100 cents */
+            sng.vibrato = (uint8_t)clamp(sng.vibrato + 5 * e, 0, 100);
+            sg.dirty = 1;
+        } else if (k == EN_K4) {              /* the word slot */
+            int i = set.slot, step = e > 0 ? 1 : -1, tries;
+            for (tries = 0; tries < 8; tries++) {
+                i = (i + step + 8) % 8;
+                if (slot_text[i])
+                    break;
+            }
+            words_select(i);
+            set_dirty = 1;
+        } else if (k == EN_ALGO) {            /* the body, as everywhere */
+            knob_turn(K_BODY, e);
+        }
+    }
+    body_settle(now);
+    (void)keys;
+    if (keys != ui.keys || btn != ui.btn)
+        ui.redraw = 1;
+    ui.keys = keys;
+    ui.btn = btn;
+    plat_glow(1);
+    plat_leds(btn | 1u << B_ENV | (sg.playing ? 1u << B_PLAY : 0u) | (sg.dirty ? 1u << B_SAVE : 0u),
+              keys | midi_keys(set.octave));
+}
+
 /* ------------------------------------------------------------------- the beatbox --- */
 /* SEQ (0.7.0): CHIMERA's beatboxer. The white keys are pads for its sounds (the lowest nine: kick, snare, hi-hat,
  * open hat, rimshot, inward snare, tongue click, lip pop, crash; the next seven again from the kick), the black keys
@@ -2362,6 +2639,8 @@ static void bt_input(uint32_t keys, uint32_t btn, uint32_t now)
             beat_save();
         } else if (k == B_HOME || k == B_SEQ) {
             beat_close();
+        } else if (k == B_GLO) {
+            debug_toggle();
         }
     }
     for (k = 0; k < NE; k++) {
@@ -2370,7 +2649,8 @@ static void bt_input(uint32_t keys, uint32_t btn, uint32_t now)
         ui.turns[k] += e;
         ui.turned_at[k] = now;
         ui.redraw = 1;
-        if (k == EN_K1) {                     /* tempo */
+        if (debug_knob(k, e)) {
+        } else if (k == EN_K1) {              /* tempo */
             beats.b[bt.slot].bpm = (uint8_t)clamp(beats.b[bt.slot].bpm + e, 40, 200);
             bt.dirty = 1;
             beat_send();
@@ -2442,6 +2722,10 @@ static void input(void)
     }
     if (bt.on) {                             /* the beatbox: the keys are pads */
         bt_input(keys, btn, now);
+        return;
+    }
+    if (sg.on) {                             /* the SING page: a tune sings the words */
+        sg_input(keys, btn, now);
         return;
     }
     for (k = 0; k < NKEYS; k++) {            /* key 0 is F3 (MIDI 53) */
@@ -2522,6 +2806,11 @@ static void input(void)
             app_say(PAGE_NAME[page], "");
         } else if (k == B_EDIT) {                /* the word editor, on the slot sung (from the next input) */
             ed_open();
+        } else if (k == B_ENV) {                 /* CHIMERA's tunes (0.8.0): a human body's */
+            if (body_cur == BODY_SEAL)
+                app_say("SING", "LFO: BACK TO HUMAN");
+            else
+                song_open();
         } else if (k == B_LFO) {                 /* the Bestiary (0.7.0), and back */
             bestiary_toggle();
         } else if (k == B_SEQ) {                 /* the beatbox (0.7.0): a human body's */
@@ -2531,11 +2820,8 @@ static void input(void)
                 beat_open();
         } else if (k == B_REC && FM1B_BLE)
             ui.rec_t = plat_ms();                /* a press: on release (a hold switches Bluetooth) */
-        else if (k == B_GLO) {                 /* the debug page (the timings) / the flat view */
-            page_debug = (uint8_t)!page_debug;
-            lcd_fill(0, 0, 240, 240, C_BLACK);
-            ui.redraw = 1;
-        } else if (k == B_PLAY && body_cur == BODY_SEAL) {   /* the seal: its call */
+        else if (k == B_GLO)                   /* the debug page (the timings) / the flat view */
+            debug_toggle(); else if (k == B_PLAY && body_cur == BODY_SEAL) {   /* the seal: its call */
             seal_call(-1);
         } else if (k == B_PLAY) {                /* speak the slot's words (in WORDS) */
             mode_set(0);
@@ -2615,6 +2901,7 @@ static void input(void)
             t[1] = (char)('1' + i);
             t[2] = 0;
             app_say(t, PRESET_NAME[i]);
+        } else if (debug_knob(k, e)) {
         } else if (k >= EN_K1 && k <= EN_K4 && body_cur == BODY_SEAL) {
             seal_knob((int)(k - EN_K1), e);
         } else if (k >= EN_K1 && k <= EN_K4) {   /* the page's four values */
@@ -2757,14 +3044,14 @@ static void draw_debug(void)
                     w[i] = (char)(w[i] - 'a' + 'A');
             cv_text(100, 108, &FONT_XS, w, speaking || so ? V_WHITE : C_GRAY);
         }
-        {
-            char e[28] = "ANATOMY EVERY ";
+        {   /* K1 the anatomy's rate (every 4th, 2nd or every step), K2 the treble shelf */
+            char e[32] = "ANATOMY ";
             char nb[4];
             int_text((int32_t)anat_every, nb);
             text_cat(e, nb);
-            text_cat(e, anat_every == 1 ? " STEP" : " STEPS");
+            text_cat(e, shelf_on ? "  SHELF ON" : "  SHELF OFF");
             cv_text(4, 124, &FONT_XS, e, C_GRAY);
-            cv_text(150, 124, &FONT_XS, "% OF 5.8 MS", C_DIM);
+            cv_text(150, 124, &FONT_XS, "K1 / K2", C_DIM);
         }
     }
     cv_blit(0, 36);
@@ -3345,16 +3632,149 @@ static void draw_seal(void)
     cv_blit(0, (uint32_t)(HOME_TOP + 152));
 }
 
+/* ------------------------------------------------------------------ the SING page --- */
+/* the head singing, the syllable now and next, the phrase's melody (each note a bar at its pitch, as long as its
+ * beats; the note sounding lit), the knobs */
+static void draw_song(void)
+{
+    const ch_tune_t *tn = &CH_TUNES[sng.tune];
+    const int now_k = song_note_now();
+    char t[32];
+    int32_t x, y0, i;
+    /* the header: the tune and its tempo */
+    cv_begin(240, HOME_TOP, C_BLACK);
+    if (plat_ms() < ui.msg_until) {
+        x = cv_text(8, 4, &FONT_B, ui.msg[0], V_WHITE);
+        cv_text(x + 8, 4, &FONT_B, ui.msg[1], V_BLUE);
+    } else {
+        x = cv_text(8, 7, &FONT_XS, "SING", V_BLUE);
+        x = cv_text(x + 8, 7, &FONT_XS, tn->name, V_WHITE);
+        if (sg.dirty)
+            cv_text(x + 8, 7, &FONT_XS, "UNSAVED", RGB(0xff, 0xb3, 0x40));
+        int_text((int32_t)(tn->bpm * (float)sng.tempo / 100.0f + 0.5f), t);
+        text_cat(t, " BPM");
+        cv_text(232 - text_w(&FONT_XS, t), 7, &FONT_XS, t, V_BLUE_MID);
+    }
+    cv_rect(8, HOME_TOP - 1, 224, 1, RGB(0x13, 0x39, 0x54));
+    cv_blit(0, 0);
+    /* the head, and the syllables beside it */
+    head_s = (float)BT_HEAD_H / (CH_VIEW_Y1 - CH_VIEW_Y0);
+    head_x0 = 2.0f;
+    head_y0 = (float)HOME_TOP;
+    for (y0 = HOME_TOP; y0 < HOME_TOP + BT_HEAD_H; y0 += BT_HEAD_H / 2) {
+        cv_begin(240, BT_HEAD_H / 2, C_BLACK);
+        if (head_ready)
+            draw_head(y0);
+        cv_text(112, HOME_TOP + 6 - y0, &FONT_XS, sg.playing ? "SINGING" : "PLAY: SING", sg.playing ? V_GREEN : V_BLUE_MID);
+        t[0] = 0;
+        if (now_k >= 0) {
+            int b = now_k;
+            while (b > 0 && sg_note[b].held)
+                b--;
+            upper(t, sg_syl[sg_note[b].syl].text, 10);
+            if (sg_note[now_k].held)
+                text_cat(t, "~");
+        }
+        cv_text(112, HOME_TOP + 22 - y0, &FONT_L, t[0] ? t : "-", now_k >= 0 ? V_WHITE : V_BLUE_DIM);
+        cv_text(112, HOME_TOP + 66 - y0, &FONT_XS, "WORDS", V_BLUE_MID);
+        {
+            char sl[8] = "SLOT ";
+            sl[5] = (char)('1' + set.slot);
+            sl[6] = 0;
+            cv_text(150, HOME_TOP + 66 - y0, &FONT_XS, sl, V_BLUE_DIM);
+        }
+        upper(t, lyric[0] ? lyric : "(LA LA LA)", 14);
+        if (lyric[14])
+            text_cat(t, "..");
+        cv_text(112, HOME_TOP + 80 - y0, &FONT_XS, t, V_BLUE);
+        cv_blit(0, (uint32_t)y0);
+    }
+    /* the phrase's melody: the one singing (or the tune's first) */
+    cv_begin(240, 60, C_BLACK);
+    cv_rect(8, 0, 224, 1, RGB(0x13, 0x39, 0x54));
+    {
+        uint8_t m[40];
+        float b[40], total = 0;
+        int n = 0, cur = -1, lo = 127, hi = 0, a = 0;
+        if (sg.playing && now_k >= 0) {        /* the fitted phrase around the note sounding */
+            a = now_k;
+            while (a > 0 && !sg_note[a - 1].phrase_end)
+                a--;
+            for (i = a; i < sg_n && n < 40; i++) {
+                m[n] = sg_note[i].midi;
+                b[n] = sg_note[i].beats;
+                if (i == now_k)
+                    cur = n;
+                n++;
+                if (sg_note[i].phrase_end)
+                    break;
+            }
+        } else {                              /* the tune's first phrase */
+            for (i = 0; i < tn->phrase_len[0] && n < 40; i++) {
+                m[n] = (uint8_t)(tn->notes[i].midi + sng.key);
+                b[n] = (float)tn->notes[i].half_beats * 0.5f;
+                n++;
+            }
+        }
+        for (i = 0; i < n; i++) {
+            total += b[i];
+            lo = m[i] < lo ? m[i] : lo;
+            hi = m[i] > hi ? m[i] : hi;
+        }
+        if (hi - lo < 6)
+            hi = lo + 6;
+        x = 8;
+        for (i = 0; i < n; i++) {
+            const int32_t w = (int32_t)(b[i] / total * 224.0f + 0.5f), y = 50 - (int32_t)((m[i] - lo) * 40 / (hi - lo));
+            cv_rect(x + 1, y, w > 3 ? w - 2 : 1, 5, i == cur ? V_GREEN : i < cur ? V_BLUE_DIM : V_BLUE);
+            x += w;
+        }
+    }
+    cv_blit(0, BT_GRID_Y);
+    /* the knobs, in their colours */
+    cv_begin(240, 240 - BT_GRID_Y - 60, C_BLACK);
+    {
+        static const uint16_t col[4] = {V_GREEN, V_RED, V_PINK, V_WHITE};
+        static const char *const NM[4] = {"TEMPO", "KEY", "VIBRATO", "SLOT"};
+        for (i = 0; i < 4; i++) {
+            const int32_t cx = 8 + i * 58;
+            t[0] = 0;
+            if (i == 0) {
+                text_cat(t, "X");
+                fmt1((float)sng.tempo / 100.0f, t + 1);
+                if (sng.tempo % 10) {         /* (two decimals when it has them) */
+                    char d[2] = {(char)('0' + sng.tempo % 10), 0};
+                    text_cat(t, d);
+                }
+            } else if (i == 1) {
+                if (sng.key > 0)
+                    text_cat(t, "+");
+                int_text(sng.key, t + (sng.key > 0));
+            } else if (i == 2) {
+                int_text(sng.vibrato, t);
+            } else {
+                int_text(set.slot + 1, t);
+            }
+            cv_rect(cx, 7, 4, 4, col[i]);
+            cv_text(cx + 8, 3, &FONT_XS, NM[i], col[i]);
+            cv_text(cx, 18, &FONT_M, t, col[i]);
+        }
+    }
+    cv_blit(0, BT_GRID_Y + 60);
+}
+
 static void draw(void)
 {
     if (ed.on)
         draw_edit();
+    else if (page_debug)                     /* (over the beatbox and the SING page too: their load, measured) */
+        draw_debug();
     else if (bt.on)
         draw_beat();
-    else if (body_cur == BODY_SEAL && !page_debug)
+    else if (sg.on)
+        draw_song();
+    else if (body_cur == BODY_SEAL)
         draw_seal();
-    else if (page_debug)
-        draw_debug();
     else
         draw_home();
 }
@@ -3393,6 +3813,7 @@ void app_frame(void)
     uint32_t i, now = plat_ms(), pct = plat_master() * 100u / 4096u;
     input();
     speak();
+    song_tick();
     for (i = 0; i < NE; i++)                 /* an encoder's light goes out */
         if (ui.turned_at[i] && now - ui.turned_at[i] < 400u && now > lit_until)
             lit_until = ui.turned_at[i] + 300u;
@@ -3423,6 +3844,14 @@ void app_frame(void)
         static uint32_t seal_at;
         if (now - seal_at >= 50u && (seal_breath > 0.05f || cvoice.call >= 0 || plat_ms() - seal_played_at < 400u)) {
             seal_at = now;
+            ui.redraw = 1;
+        }
+    }
+    if (sg.on) {                             /* the SING page: the note sounding moved */
+        static int was_note = -2;
+        const int k = song_note_now();
+        if (k != was_note) {
+            was_note = k;
             ui.redraw = 1;
         }
     }
@@ -3497,8 +3926,31 @@ int app_expect(const char *what, int *got)
         *got = set.slot;
     else if (!strcmp(what, "page"))
         *got = page;
+    else if (!strcmp(what, "glo"))           /* the debug page shown */
+        *got = page_debug;
+    else if (!strcmp(what, "shelf"))         /* the debug page's treble shelf */
+        *got = shelf_on;
     else if (!strncmp(what, "slotlen", 7))  /* slotlenN: slot N's length (0-based; 0: empty) */
         *got = slot_text[atoi(what + 7) % WORDS_SLOTS] ? slot_len[atoi(what + 7) % WORDS_SLOTS] : 0;
+    else if (!strcmp(what, "sing"))          /* the SING page: open, singing, its tune, tempo (%), key, the note now, the notes
+                                              * fitted, the phrases sent, the song's clock (ms) */
+        *got = sg.on;
+    else if (!strcmp(what, "singing"))
+        *got = sg.playing;
+    else if (!strcmp(what, "tune"))
+        *got = sng.tune;
+    else if (!strcmp(what, "tempo"))
+        *got = sng.tempo;
+    else if (!strcmp(what, "key"))
+        *got = sng.key;
+    else if (!strcmp(what, "songnote"))
+        *got = song_note_now();
+    else if (!strcmp(what, "songnotes"))
+        *got = sg_n;
+    else if (!strcmp(what, "songsent"))
+        *got = sg_next;
+    else if (!strcmp(what, "songms"))
+        *got = (int)(song_now * 1000.0f);
     else if (!strcmp(what, "beat"))          /* the beatbox: open, playing (the audio's), its step, slot, cursor, tempo */
         *got = bt.on;
     else if (!strcmp(what, "beatplay"))
