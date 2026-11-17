@@ -43,6 +43,13 @@ typedef struct {
     ch_real R[2], L[2], k, area;
 } ch_wnsec_t;
 
+/* a sealed pocket (ch_wave_t.pock) */
+typedef struct {
+    int16_t c0, c1, a, b;               /* its anatomy cells (pharynx then mouth, one index), its tract sections */
+    uint8_t glottis;                    /* bounded by the glottis (sealed) rather than a closure on its left */
+    ch_real p, dp;                      /* its pressure (dyn/cm²) and its ramp a sample */
+} ch_wpock_t;
+
 typedef struct {
     ch_real fs, rho_c, closed_area;
     int n, nn, jv;                          /* tract and nose sections; the nose joins at junction jv */
@@ -82,6 +89,9 @@ typedef struct {
     int16_t shut[CH_WMAX];
     uint8_t walls;
     ch_real wall_s, wall_v, wall_y, wall_u;
+    ch_real wall_rad;                       /* the share of the walls' motion that radiates (CHIMERA's wall_radiation);
+                                             * a fifth of it while the glottis is sealed (an ejective's compressed throat
+                                             * thumped ~12 dB louder than CHIMERA's before the hit; no voice bar then) */
     /* the moving walls' volume source (CHIMERA's vol_src), lumped: the volume the tract behind its first closure (the
      * anatomy's cells) loses per second as the tongue, jaw and lips move, pushed in at the glottis's end. Behind a
      * closure it is what builds the pressure that stops the voicing in a stop (without it a /g/ stayed voiced ~80 ms,
@@ -93,6 +103,23 @@ typedef struct {
     ch_real vcell[2 * CH_MAXTUBE];          /* each anatomy cell's volume at the last shape (pharynx, then mouth) */
     uint8_t vol_ok;
     int vol_cells;
+    /* sealed pockets (0.7.0): air shut in at both ends (between two closures, or between a sealed glottis and a
+     * closure, the nose not open to it) keeps the pressure its volume gives it (CHIMERA's continuity: dp = -dV over
+     * the air's compliance V / rho c^2 and its yielding walls'): the hollowed pocket of a click, the compressed throat
+     * of an ejective. The waveguide's losses would bleed that pressure away in ~5 ms, so it is held on the pocket's
+     * sections each sample until a closure opens and the waves carry it out. Per pocket: its anatomy cells, its
+     * sections, its pressure ramped over the step */
+    uint8_t n_pock;
+    ch_wpock_t pock[2];
+    ch_real pock_k, pock_wall, pock_max, pock_max_oral;   /* the air's bulk modulus (rho c^2); the walls' compliance
+                                             * a cm² of wall; the most a pocket holds (dyn/cm²): one the glottis seals, one
+                                             * in the mouth */
+    uint8_t glot_sealed;                    /* this step's glottis is sealed (its closure >= 0.5) */
+    /* a pocket's release snaps: a closure opening beside a sealed pocket glides to its opening in one control step,
+     * not over the anatomy's (every 4th step on the FM-1: a click's tip opening across two of them bled its pocket out
+     * through a slit, 15 dB quieter, CHIMERA's anatomy runs every step); its glide stops at the next step */
+    uint8_t n_fast;
+    int16_t fast[4];
     /* the glottis: CHIMERA's area model and its port's constants (HumanAirway's glottis_port) */
     ch_glottis_t glottis;
     ch_real port_len, port_slit, port_kin, port_kex;

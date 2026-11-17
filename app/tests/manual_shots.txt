@@ -60,3 +60,44 @@ wait 1800
 shot body-child.png
 spin ALGO -2
 wait 600
+# the beatbox (SEQ): "Boots and cats" playing, the hi-hat heard; then STEP EDIT on the empty beat
+tap SEQ
+wait 100
+tap PLAY
+wait 1240
+shot beat.png
+tap PLAY
+wait 300
+spin PRESET 7
+tap EDIT
+tapkey 0
+tap OCT+
+tapkey 2
+tapkey 7
+wait 400
+shot beat-edit.png
+tap EDIT
+tap SEQ
+wait 300
+# the Bestiary's seal (LFO): a key held
+tap LFO
+wait 700
+key 7 down
+wait 600
+shot seal.png
+key 7 up
+tap LFO
+wait 600
+# the Bestiary's songbird (LFO, then ALGORITHM): a key held, its two voices
+tap LFO
+wait 300
+spin ALGO 1
+wait 1600
+key 7 down
+wait 600
+shot bird.png
+key 7 up
+spin ALGO -1
+wait 300
+tap LFO
+wait 600

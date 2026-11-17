@@ -9,11 +9,15 @@ mouth and nose, simulated. How the voice works is his. This firmware only adapts
 This is version {{VERSION}} of FM-1 Chimera Vocal. The FM-1 sings words: each key sings the next syllable of a line, at the key's pitch, and
 PLAY speaks the line. ALGORITHM chooses CHIMERA's male, female or child body, each with its own airway and its own
 vowels. The screen is CHIMERA's flat view, the head moving as it sings. Every sound comes from the
-simulated airway, not from samples.
+simulated airway, not from samples. The same mouth beatboxes (SEQ: CHIMERA's ten drum sounds, its beats and a step
+sequencer), and LFO swaps it for a seal's or a songbird's, from CHIMERA's Bestiary.
 
 ![The FM-1's screen singing Hello there, I am a voice made of air, a syllable a key: the head moving, the syllable sounding and the next](img/preview-words.gif "WORDS: a syllable a key")
 ![The FM-1's screen in VOWEL mode: a held note while the knobs sweep the vowels, ER, OW, AH, EY, with their formants](img/preview-vowel.gif "VOWEL: the knobs move the mouth")
 ![The FM-1's screen while PLAY speaks the line: the head moving through it](img/preview-speak.gif "PLAY: speaking the line")
+![The FM-1's screen beatboxing Boots and cats: the head making each sound, its name, the playhead on the sixteen steps](img/preview-beat.gif "SEQ: the beatbox")
+![The FM-1's screen playing the seal: a key held, its breath pulsing through its throat and mouth, then its falling trill](img/preview-seal.gif "LFO: the seal")
+![The FM-1's screen playing the songbird: a key held, its two valves opening, then its flute phrase](img/preview-bird.gif "LFO: the songbird")
 
 The voice uses both of the FM-1's processor cores: the second core simulates the sound waves in the throat, mouth and
 nose and the vocal folds, every sample; the first runs CHIMERA's control (the tongue, jaw and lips moving along the

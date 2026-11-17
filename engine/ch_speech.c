@@ -863,6 +863,25 @@ static void oral_gestures(const ch_phon_t *def, const ch_real *tg, ch_real a, ch
     }
 }
 
+/* the beatbox's oral (beatbox.rs `oral`): the consonant's gestures with `n` extra targets over its own; returns where
+ * they start in the plan (nothing added: no such phoneme) */
+int ch_oral(const char *ipa, ch_real a, ch_real b, ch_real speed, const int *keys, const ch_real *vals, int n, ch_plan_t *o)
+{
+    const ch_phon_t *d = phoneme(ipa);
+    ch_real tg[CH_NARTIC];
+    int k, start = o->n;
+    if (!d)
+        return start;
+    for (k = 0; k < CH_NARTIC; k++)
+        tg[k] = d->t[k];
+    for (k = 0; k < n; k++)
+        tg[keys[k]] = vals[k];
+    oral_gestures(d, tg, a, b, speed, o);
+    return start;
+}
+
+const ch_real *ch_vowel_artic(const char *ipa) { return vowel_artic(ipa); }
+
 void ch_plan_defaults(ch_plan_opts_t *o)
 {
     o->t0 = 0;

@@ -19,9 +19,10 @@ int template_ble_off(void);
 
 /* the store: the app's objects, the panel calibration (the platform's) and Bluetooth's address and pairing among
  * them, and their flash offsets */
-/* OBJ_WORDS: the word slots (the Studio's); OBJ_PRESETS: the voice presets and the vowel snapshots */
-enum { OBJ_SETTINGS, OBJ_PANEL, OBJ_BLE, OBJ_WORDS, OBJ_PRESETS, OBJ_NOBJ };
-#define APP_STORE_MAP {0xFC000u, 0xDC000u, 0xDE000u, 0xD8000u, 0xDA000u}
+/* OBJ_WORDS: the word slots (the Studio's); OBJ_PRESETS: the voice presets and the vowel snapshots; OBJ_BEATS: the
+ * beatbox's beats; OBJ_CREATURES: the Bestiary's settings (0.7.0) */
+enum { OBJ_SETTINGS, OBJ_PANEL, OBJ_BLE, OBJ_WORDS, OBJ_PRESETS, OBJ_BEATS, OBJ_CREATURES, OBJ_NOBJ };
+#define APP_STORE_MAP {0xFC000u, 0xDC000u, 0xDE000u, 0xD8000u, 0xDA000u, 0xD6000u, 0xD4000u}
 
 /* the contract: the platform calls these */
 void app_init(void);                     /* boot: the engine, then the saved settings (or defaults) */

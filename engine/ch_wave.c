@@ -89,6 +89,15 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
     w->resets = 0;
     w->vol_ok = 0;
     w->vol_cells = 0;
+    w->n_pock = 0;
+    w->n_fast = 0;
+    w->glot_sealed = 0;
+    w->wall_rad = R(0.25);
+    w->pock_k = RHO * C_SOUND * C_SOUND;      /* adiabatic air */
+    w->pock_wall = R(1.0) / R(3.0e5);         /* the walls' compliance a cm² (CHIMERA's wall stiffness, 3e5 CGS) */
+    w->pock_max = R(10.0) * R(980.665);       /* 10 cmH2O: a sealed throat (lab: CHIMERA's kick) */
+    w->pock_max_oral = R(4.0) * R(980.665);   /* 4 cmH2O: a pocket in the mouth. CHIMERA's reach ~-30 but radiate less
+                                               * through its slower-opening releases (lab: its clicks and lip pops) */
     w->wall_s = w->wall_v = w->wall_y = w->wall_u = 0;
     for (i = 0; i < 2; i++) {
         w->rb0[i] = R(-1.0);
@@ -198,6 +207,7 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
         tiny(&w->p_lung_now);
     w->p_lung_step = (w->p_lung - w->p_lung_now) * inv1;
     w->glottis.p = *g;
+    w->glot_sealed = g->closure >= R(0.5);   /* (the sealed pockets': a sealed glottis keeps a chink of ~0.001 cm²) */
     glottis_flush_tiny(&w->glottis);
     tiny(&w->dc_x);
     tiny(&w->dc_y);
@@ -213,6 +223,14 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
         }
     }
 #endif
+    /* a snapped release's glide is done (it took one control step) */
+    for (i = 0; i < w->n_fast; i++) {
+        const int f = w->fast[i];
+        w->sec[f].darea = w->sec[f].dk = 0;
+        if (f + 1 < w->n)
+            w->sec[f + 1].dk = 0;
+    }
+    w->n_fast = 0;
     if (!t)
         return;                                 /* no new shape: the tract glides on */
     inv = inv1 / (ch_real)(steps < 1 ? 1 : steps);
@@ -244,6 +262,91 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     for (i = 0; i < w->n; i++)
         if (w->sec[i].area < w->closed_area || target[i] < w->closed_area)
             w->shut[w->n_shut++] = (int16_t)i;
+    /* the closures opening beside a sealed pocket this step (snapped, below) */
+    for (i = 0; i < w->n_pock; i++) {
+        const int e[2] = {w->pock[i].glottis ? -1 : w->pock[i].a - 1, w->pock[i].b + 1};
+        int j;
+        for (j = 0; j < 2; j++)
+            if (e[j] >= 0 && e[j] < w->n && w->n_fast < 4 && target[e[j]] >= w->closed_area && w->sec[e[j]].area < w->closed_area)
+                w->fast[w->n_fast++] = (int16_t)e[j];
+    }
+    /* the sealed pockets: runs of open anatomy cells shut in at both ends (a closed cell, or the glottis sealed at the
+     * start), the nose not open to them; each one's pressure moves with its volume, over the cells it had at the last
+     * shape too (a cell joining or leaving as a closure's front moves is no volume change: that read as a jump) */
+    {
+        const ch_real dph = t->ph_len / (ch_real)t->n_ph, dor = t->or_len / (ch_real)t->n_or;
+        const int nc = t->n_ph + t->n_or, glot = w->glot_sealed, port = t->velum_port_area >= w->closed_area;
+        int np = 0, start = glot ? 0 : -1, c, j;
+        ch_wpock_t next[2];
+        for (c = 0; c < nc && np < 2; c++) {
+            const int part = c >= t->n_ph, i = part ? c - t->n_ph : c;
+            int c0, c1, a, b, old;
+            ch_real v = 0, dv = 0, s0, s1, p = 0, wall = 0;
+            if (cell_area(t, part, i, w->closed_area) != 0)
+                continue;
+            c0 = start;
+            c1 = c - 1;
+            start = c + 1;
+            if (c0 < 0 || c1 < c0 || (port && c0 <= t->n_ph && c1 >= t->n_ph - 1))
+                continue;                       /* (no run, an empty one, or the nose opens into it) */
+            for (j = c0; j <= c1; j++) {
+                const int jp = j >= t->n_ph, ji = jp ? j - t->n_ph : j, vc = jp * CH_MAXTUBE + ji;
+                const ch_real aj = jp ? t->or_areas[ji] : t->ph_areas[ji], vj = aj * (jp ? dor : dph);
+                v += vj;
+                wall += R(1.4) * R(2.0) * SQRT(CH_PI * mx(aj, R(0.02))) * (jp ? dor : dph);
+                for (old = 0; old < w->n_pock; old++)
+                    if (j >= w->pock[old].c0 && j <= w->pock[old].c1)
+                        break;
+                if (old < w->n_pock && w->vol_ok)
+                    dv += vj - w->vcell[vc];
+            }
+            /* its sections: the open ones whose middles lie in its cells' span */
+            s0 = c0 < t->n_ph ? (ch_real)c0 * dph : t->ph_len + (ch_real)(c0 - t->n_ph) * dor;
+            s1 = c1 < t->n_ph ? (ch_real)(c1 + 1) * dph : t->ph_len + (ch_real)(c1 + 1 - t->n_ph) * dor;
+            a = (int)(s0 / per + R(0.5));
+            b = (int)(s1 / per - R(0.5));
+            a = a < (c0 == 0 && glot ? 0 : 1) ? (c0 == 0 && glot ? 0 : 1) : a;   /* (a closure before it, or the glottis) */
+            b = b > w->n - 2 ? w->n - 2 : b;    /* (a pocket always has a closure past it) */
+            while (a <= b && target[a] < w->closed_area)
+                a++;
+            while (b >= a && target[b] < w->closed_area)
+                b--;
+            if (a > b || v <= 0)
+                continue;
+            /* its pressure: the old pocket's it overlaps, moved by the volume change; a new one starts at the pressure
+             * its waves hold */
+            for (old = 0; old < w->n_pock; old++)
+                if (c0 <= w->pock[old].c1 && c1 >= w->pock[old].c0)
+                    break;
+            if (old < w->n_pock) {
+                p = w->pock[old].p;             /* (where the last step's ramp has brought it) */
+            } else {
+                for (j = a; j <= b; j++)
+                    p += w->sec[j].R[w->p] + w->sec[j].L[w->p];
+                p /= (ch_real)(b - a + 1);
+            }
+            {
+                /* the volume change over the pocket's compliance: the air's (V / rho c^2) and its walls' (their area over
+                 * CHIMERA's soft-tissue stiffness): a throat's walls give ~14x what its air does */
+                ch_real goal = p - dv / (v / w->pock_k + wall * w->pock_wall);
+                {
+                    const ch_real lim = c0 == 0 && glot ? w->pock_max : w->pock_max_oral;
+                    goal = goal > lim ? lim : goal < -lim ? -lim : goal;
+                }
+                next[np].c0 = (int16_t)c0;
+                next[np].c1 = (int16_t)c1;
+                next[np].a = (int16_t)a;
+                next[np].b = (int16_t)b;
+                next[np].glottis = (uint8_t)(c0 == 0 && glot);
+                next[np].p = p;
+                next[np].dp = (goal - p) * inv;
+                np++;
+            }
+        }
+        for (j = 0; j < np; j++)
+            w->pock[j] = next[j];
+        w->n_pock = (uint8_t)np;
+    }
     /* the volume source: what the anatomy's cells behind the first closure lost since the last shape, each cell's own
      * change, spread over this shape's glide. (Not the volume behind the closure then and now: the closure's front
      * moving a cell forward read as that cell's whole volume appearing, a suction that broke the /d/ of "red") */
@@ -266,6 +369,11 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
         }
         n_cells = t->n_ph + t->n_or;
         w->vol_goal = w->vol_src && shut && w->vol_ok && n_cells == w->vol_cells ? -dv * inv * w->fs : 0;
+        /* with no breath behind it (a beatboxer's set-up, the gate shut) the air the moving walls push goes back to
+         * the lungs through the open glottis, which this end treats as nearly rigid: there the source would build a
+         * pressure CHIMERA's open glottis lets go (a lip pop's closing came out ~20 dB too loud). It fades in with
+         * the lungs' pressure to 2 cmH2O; speech always has that, so it is as before (0.7.0) */
+        w->vol_goal *= clampr(w->p_lung / (R(2.0) * R(980.665)), 0, R(1.0));
         w->vol_ok = 1;
         w->vol_cells = n_cells;
     }
@@ -275,6 +383,15 @@ CH_HOT void ch_wave_block(ch_wave_t *w, const ch_shape_t *t, int steps, const ch
     for (m = 1; m < w->n; m++) {
         w->sec[m].k = refl(w->sec[m - 1].area, w->sec[m].area);
         w->sec[m].dk = (refl(target[m - 1], target[m]) - w->sec[m].k) * inv;
+    }
+    /* the snapped releases: their glides (and their two junctions') in one control step */
+    for (i = 0; i < w->n_fast; i++) {
+        const int f = w->fast[i];
+        const ch_real x = (ch_real)(steps < 1 ? 1 : steps);
+        w->sec[f].darea *= x;
+        w->sec[f].dk *= x;
+        if (f + 1 < w->n)
+            w->sec[f + 1].dk *= x;
     }
     /* the nose: where it joins, the port's area as its first section. It moves only when the pharynx's end is a whole
      * section away (not half): a move restarts the junction's waves, and with the nose carrying the mouth's held
@@ -553,6 +670,28 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
             if (c->area < w->closed_area)
                 c->R[q] = c->L[q] = 0;
         }
+        /* the sealed pockets: each one's sections held at its pressure (their mean moved to it, the waves' differences
+         * kept), until a closure around it opens; then the waves carry the pressure out (the click, the ejective) */
+        for (m = 0; m < w->n_pock; m++) {
+            ch_wpock_t *k = &w->pock[m];
+            ch_real sum = 0, d;
+            int j;
+            if ((k->glottis ? !w->glot_sealed : sec[k->a - 1].area >= w->closed_area && sec[k->a - 1].darea >= 0)
+                || (sec[k->b + 1].area >= w->closed_area && sec[k->b + 1].darea >= 0)) {   /* (a closure still closing
+                                                                                       * keeps it sealed) */
+                w->pock[m] = w->pock[--w->n_pock];   /* (open: it is the waves' now) */
+                m--;
+                continue;
+            }
+            k->p += k->dp;
+            for (j = k->a; j <= k->b; j++)
+                sum += sec[j].R[q] + sec[j].L[q];
+            d = R(0.5) * (k->p - sum / (ch_real)(k->b - k->a + 1));
+            for (j = k->a; j <= k->b; j++) {
+                sec[j].R[q] += d;
+                sec[j].L[q] += d;
+            }
+        }
         /* the lips: the radiation load's reflection */
         in = sec[nt - 1].R[p];
         if (w->rad_load) {
@@ -580,7 +719,7 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
         }
         ns[nn - 1].L[q] = y * fade_n;
         rad = (rad + (in - y) * ns[nn - 1].area) / w->rho_c   /* the flow leaving the lips and the nostrils */
-              + R(0.25) * w->wall_u;                          /* and the walls' share */
+              + (w->glot_sealed ? R(0.2) * w->wall_rad : w->wall_rad) * w->wall_u;   /* and the walls' share */
         /* the turbulence, into the waves just written */
         if (w->n_noise)
             noise(w, p, q, ug);
@@ -663,6 +802,7 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
             w->nsec[m].R[0] = w->nsec[m].R[1] = w->nsec[m].L[0] = w->nsec[m].L[1] = 0;
         for (m = 0; m < 8; m++)
             w->jet_u[m] = 0;
+        w->n_pock = 0;
         w->u_g = w->l_prev = w->mom = w->p_supra = 0;
         w->wall_v = w->wall_y = w->wall_u = w->vol_u = 0;
         w->r_in[0] = w->r_in[1] = w->r_out[0] = w->r_out[1] = 0;

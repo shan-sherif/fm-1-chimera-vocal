@@ -21,3 +21,14 @@ cc -O1 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -o ../out/front_test_fm1 fro
 # the Studio against the firmware: node port/studio_test.mjs ../app/web/studio.html <cmudict.txt.gz> ../engine/ch_dict_data.h out,
 # then out/studio_check out/doc.txt must print out/studio_syl.txt
 cc -O1 $W -DCH_DOUBLE -o ../out/studio_check studio_check.c $E/ch_speech.c $E/ch_control.c $E/ch_tract.c -lm
+# the beatbox and the seal against CHIMERA's renders (`chimera render beatbox OUT [preset] [body]`, `render creature seal
+# OUT`): beat_test OUTDIR [body] [preset] (each sound, then a preset beat), seal_test OUT.wav (a note, then its calls).
+# beat_test's lab switches: BEAT_DEBUG=N (sound N's pockets step by step), PAT_DEBUG=T (the beat's from T s),
+# POCK_K / POCK_MAX / WALL_RAD / NOWALLS / NOVOL (the waveguide's pocket, wall and volume source settings)
+cc -O2 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -I../../app/dsp -o ../out/beat_test beat_test.c $E/ch_beat.c $E/ch_speech.c \
+    $E/ch_control.c $E/ch_tract.c $E/ch_wave.c $E/ch_voice.c $E/ch_fast.c -lm
+cc -O2 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -o ../out/seal_test seal_test.c $E/ch_creature.c $E/ch_wave.c $E/ch_voice.c \
+    $E/ch_fast.c $E/ch_tract.c -lm
+# the songbird (bird_test OUT.wav: a note, then its calls) against `chimera render creature songbird OUT`; its syrinx
+# tables: ../tools/gen_syrinx_waves.py (CHIMERA's syrinxTable.generated.json) > ../../engine/ch_syrinx_waves.h
+cc -O2 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -o ../out/bird_test bird_test.c $E/ch_creature.c -lm

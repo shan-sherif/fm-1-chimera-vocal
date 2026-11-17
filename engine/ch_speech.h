@@ -76,6 +76,12 @@ int ch_dict_count(void);
 const char *ch_dict_word(int i);
 int ch_arpabet(const char *phones, ch_seg_t *out, int cap);
 
+/* the beatbox's building blocks (ch_beat.c): a consonant's oral gestures from a to b at `speed`, with `n` targets
+ * (keys, vals) over its own, into the plan (returns where they start); a vowel's articulation (NULL: none). Both in
+ * the body's tables (ch_speech_body) */
+int ch_oral(const char *ipa, ch_real a, ch_real b, ch_real speed, const int *keys, const ch_real *vals, int n, ch_plan_t *o);
+const ch_real *ch_vowel_artic(const char *ipa);
+
 void ch_plan_defaults(ch_plan_opts_t *o);
 void ch_plan_utterance(const ch_seg_t *segs, int n, const ch_plan_opts_t *o, ch_plan_t *out);
 /* the phrases one after another from o->t0, each its own breath group and intonation */

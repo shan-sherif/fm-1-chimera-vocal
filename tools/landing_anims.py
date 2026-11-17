@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Shan-Sherif
 """The front page's animated previews: the device's screen from the host simulator (the firmware as it is), a frame
-every FRAME_MS while it sings words, plays VOWEL and speaks, made into looping GIFs in app/site/img/ (fm1-base's site
+every FRAME_MS while it sings words, plays VOWEL, speaks, beatboxes and plays the seal and the songbird, made into looping GIFs in app/site/img/ (fm1-base's site
 copies app/site/img to the site's img/). Run after a change to a screen:
 
   .venv/bin/python tools/landing_anims.py"""
@@ -67,6 +67,21 @@ def speak():
     return interleave([(200, "tap PLAY")], "speak", 3.6)
 
 
+def beat():
+    """SEQ: the beatbox playing "Boots and cats", the head making each sound, the playhead on the grid"""
+    return interleave([(0, "tap SEQ"), (200, "tap PLAY")], "beat", 3.6)
+
+
+def seal():
+    """LFO: the seal, a key held (its breath pulsing), then PLAY: the trill, falling"""
+    return interleave([(0, "tap LFO"), (700, "key 7 down"), (1700, "key 7 up"), (2000, "tap PLAY")], "seal", 4.4)
+
+
+def bird():
+    """LFO then ALGORITHM: the songbird, a key held (its two voices), then PLAY: its flute phrase"""
+    return interleave([(0, "tap LFO"), (100, "spin ALGO 1"), (900, "key 7 down"), (1800, "key 7 up"), (2000, "tap PLAY")], "bird", 3.6)
+
+
 def gif(name, out):
     frames = sorted(WORK.glob(f"{name}-*.png"))
     imgs = [Image.open(f).convert("RGB") for f in frames]
@@ -84,7 +99,7 @@ def main():
     for f in WORK.glob("*.png"):
         f.unlink()
     OUT.mkdir(parents=True, exist_ok=True)
-    for name, lines in (("words", words()), ("vowel", vowel()), ("speak", speak())):
+    for name, lines in (("words", words()), ("vowel", vowel()), ("speak", speak()), ("beat", beat()), ("seal", seal()), ("bird", bird())):
         script = WORK / f"{name}.txt"
         # (a fresh boot each: the voice at rest, slot 1, page 1)
         script.write_text("\n".join(["wait 400"] + lines) + "\n")

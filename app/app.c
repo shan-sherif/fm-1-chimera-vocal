@@ -36,22 +36,27 @@ static uint8_t set_dirty;                /* changed since the last save: SAVE is
 #include "ch_wave.h"
 #include "ch_control.h"
 #include "ch_live.h"
+#include "ch_beat.h"                         /* CHIMERA's beatboxer (SEQ, 0.7.0) */
 #include "voice_male.h"
 #include "voice_bodies.h"                   /* CHIMERA's three bodies: male, female, child (ALGORITHM) */
+#include "ch_creature.h"                    /* and its Bestiary's seal, the fourth (0.7.0) */
 
 /* the words: the slots the Studio sends (below, "words"); CHIMERA's presets until it has (lab/tools/gen_words_default.py) */
 #include "words_default.h"
-static uint8_t body_cur;                     /* main loop: the body (0 male, 1 female, 2 child; CH_BODIES) */
+static uint8_t body_cur;                     /* main loop: the body (0 male, 1 female, 2 child; CH_BODIES; 3 the seal) */
+static uint8_t body_hum;                     /* the human body last chosen: the words', the vowel pad's, the drawn head's */
+#define BODY_SEAL 3                          /* the Bestiary (LFO): CHIMERA's seal (ch_creature.c), in place of a body */
 /* the waveguide's loss a section, by body (0.6.0): the child's smaller tract loses more to its walls than the male's
  * setting gives; tuned against CHIMERA's renders of each body (lab/port/replay --wave, CH_WAVE_FADE: the child's
  * spectrum's mean difference 6.0 -> 5.5 dB, its 90th percentile 11.2 -> 8.2 dB; the male's and the female's best at
  * the setting they had) */
-static const float BODY_FADE[3] = {0.995f, 0.995f, 0.98f};
+static const float BODY_FADE[4] = {0.995f, 0.995f, 0.98f, 0.995f};
 /* and its level after: the child's more loss makes it 4.6 dB quieter than CHIMERA's child (it was 1.1 dB louder);
  * +4.5 dB puts it back in line (the lab's level against CHIMERA's render) */
-static const float BODY_GAIN[3] = {1.0f, 1.0f, 1.68f};
+static const float BODY_GAIN[4] = {1.0f, 1.0f, 1.68f, 1.0f};   /* (the seal's level: its output gain, below) */
 static volatile uint8_t body_req, body_audio; /* the body asked for, and the one the audio has (it switches at a block) */
-#define SPEECH_F0 (CH_BODIES[body_cur].f0)   /* the body's speaking pitch (lab record: CHIMERA's render) */
+#define SPEECH_F0 (CH_BODIES[body_hum].f0)   /* the body's speaking pitch (lab record: CHIMERA's render) */
+static const char *body_name(int b) { return b >= 0 && b < NBODIES ? CH_BODIES[b].name : "SEAL"; }
 
 #define NSUB ((int)(APP_BLOCK / VM_CTRL))           /* control steps a block */
 /* a block on plat_ticks24's clock (24 per microsecond). (256 * 24000000 overflows 32 bits: v0.0.1 showed every
@@ -104,6 +109,12 @@ static volatile uint8_t mb_full;
 static volatile uint32_t nq_head, nq_tail;
 static volatile uint8_t nq_note[NQ], nq_vel[NQ];   /* velocity 0: off */
 
+/* the beatbox's page (SEQ, below before input): on, the beat slot shown, step editing, its cursor, unsaved, playing */
+static struct {
+    uint8_t on, slot, edit, cur, dirty, play;
+} bt;
+
+static ch_beat_player_t seq PLAT_POOL;      /* the beatbox's sequencer (the audio interrupt's) */
 static ch_live_t live PLAT_POOL;            /* the main loop's: the lyrics' syllables and the cursor */
 static ch_live_cmd_t live_cmd PLAT_POOL;
 static volatile int32_t voice_note = -1;     /* the note sounding (shown), -1 none */
@@ -113,6 +124,12 @@ static volatile uint8_t speaking;            /* PLAY's speech is in the score */
 static uint8_t vowel_mode;
 static float speech_rate = 1.0f;
 static void vowel_on(int32_t note, uint32_t vel);
+static void beat_note(int32_t note);           /* (the beatbox: MIDI in's note as its key's pad) */
+static void seal_on(int32_t note);
+static void seal_off(int32_t note);
+static void creature_pick(int32_t e);
+static void creatures_load(void);
+static void beats_load(void);
 static void vowel_off(int32_t note);
 static void vp_take(void);
 static void int_text(int32_t v, char *b);
@@ -139,8 +156,63 @@ static float xvib_now, xbend_now = 1.0f;     /* (the audio interrupt's) */
 static volatile uint8_t midi_prs, midi_mod;  /* MIDI in: the last aftertouch, the mod wheel (0..127) */
 static volatile int16_t midi_bend;           /* MIDI in: the pitch bend, -8192..8191 */
 
+/* the seal (0.7.0, the fourth body): its creature voice and its control, the audio interrupt's; the main loop's
+ * settings, gate and calls come through a mailbox (one struct, a flag; a call when its number changes) */
+typedef struct {
+    float perf[CH_CP_MAX];                   /* the settings, the pitch included */
+    float gate;
+    int8_t call;
+    uint8_t call_seq;                        /* (a new call: a new number) */
+    float call_pitch;                        /* Hz; 0: its own */
+} cmail_t;
+static cmail_t cm_out;
+static volatile uint8_t cm_dirty;
+static ch_cvoice_t cvoice PLAT_POOL;
+static ch_seal_t seal;
+static ch_bird_t bird PLAT_POOL;
+#define NCRE 2                               /* the Bestiary's creatures: the seal, the songbird */
+static const ch_cdef_t *const CRE_DEF[NCRE] = {&CH_SEAL, &CH_BIRD};
+static volatile uint8_t cre_req, cre_audio;  /* the creature asked for (main loop), the one the audio has */
+static volatile uint8_t bird_audio;          /* the audio renders the songbird (on the second core, whole) */
+static uint8_t cm_seen;
+static volatile uint8_t seal_audio;          /* the audio renders the seal */
+static volatile float seal_breath;           /* (shown: its lungs' pressure, cmH2O) */
+
+static void cm_take(void)                    /* audio interrupt: the seal's settings, now */
+{
+    int i;
+    if (!cm_dirty)
+        return;
+    for (i = 0; i < CRE_DEF[cre_audio]->np; i++)
+        ch_cvoice_set(&cvoice, i, cm_out.perf[i]);
+    ch_cvoice_gate(&cvoice, cm_out.gate);
+    if (cm_out.call_seq != cm_seen) {
+        cm_seen = cm_out.call_seq;
+        if (cm_out.call >= 0)
+            ch_cvoice_call(&cvoice, cm_out.call, cm_out.call_pitch, 1.0f);
+        else
+            ch_cvoice_stop_call(&cvoice);
+    }
+    cm_dirty = 0;
+}
+
 static void control_step(step_t *d)
 {
+    if (bird_audio) {                        /* the songbird: all of it on the second core (tract_job) */
+        d->has_shape = 0;
+        return;
+    }
+    if (seal_audio) {                        /* the seal: its tubes every step (no anatomy), its glottis, its lungs */
+        const float dt = (float)VM_CTRL / (float)VM_FS;
+        ch_cvoice_step(&cvoice, dt);
+        ch_seal_control(&seal, &cvoice, dt, (float)VM_FS, &d->g, &d->p_lung, &d->shape);
+        d->has_shape = 1;
+        d->steps = 1;
+        xbend_now += (xbend_target - xbend_now) * 0.25f;
+        d->g.f0 *= xbend_now;
+        seal_breath = d->p_lung / 980.665f;
+        return;
+    }
     ctl.anat_every = anat_every;
     d->has_shape = (uint8_t)ch_control_step(&ctl, &tract);
     if (d->has_shape) {
@@ -161,6 +233,21 @@ __attribute__((section(".c1_text"))) static void tract_job(uint32_t which)
 {
     uint32_t t0 = PLAT_FAR(plat_ticks24)();
     int s;
+    if (bird_audio) {                        /* the songbird: its control steps and its airway at 2x, here */
+        for (s = 0; s < NSUB; s++) {
+            float *o = vbuf + (uint32_t)s * VM_CTRL;
+            int i;
+            PLAT_FAR(ch_cvoice_step)(&cvoice, (float)VM_CTRL / (float)VM_FS);
+            PLAT_FAR(ch_bird_control)(&bird, &cvoice, VM_CTRL);
+            bird.l.f0 *= xbend_target;       /* (MIDI in's pitch bend) */
+            bird.r.f0 *= xbend_target;
+            for (i = 0; i < VM_CTRL; i++)
+                o[i] = (float)ch_bird_sample(&bird);   /* (in RAM, as the waveguide) */
+        }
+        seal_breath = bird.ps / 980.665f;
+        c1_last = PLAT_FAR(plat_ticks24)() - t0;
+        return;
+    }
     for (s = 0; s < NSUB; s++) {
         step_t *d = &steps[which][s];
         ch_wave_block(&wave, d->has_shape ? &d->shape : 0, d->steps, &d->g, d->p_lung);
@@ -186,6 +273,9 @@ static void voice_init(void)
         control_step(&steps[0][s]);
     cur = 0;
     ch_live_init(&live);
+    ch_beat_player_init(&seq);
+    ch_cvoice_init(&cvoice, &CH_SEAL);
+    ch_seal_init(&seal);
     ch_lts_device = 1;                       /* the FM-1's letter-to-sound additions (no room for the dictionary) */
 }
 
@@ -215,6 +305,14 @@ static void post_live(void)
 
 static void live_on(int32_t note, uint32_t vel)
 {
+    if (bt.on) {                              /* the beatbox: a note is its key's pad */
+        beat_note(note);
+        return;
+    }
+    if (body_cur == BODY_SEAL) {              /* the seal: its pitch */
+        seal_on(note);
+        return;
+    }
     if (vowel_mode) {
         vowel_on(note, vel);
         return;
@@ -227,6 +325,12 @@ static void live_on(int32_t note, uint32_t vel)
 
 static void live_off(int32_t note)
 {
+    if (bt.on)
+        return;
+    if (body_cur == BODY_SEAL) {
+        seal_off(note);
+        return;
+    }
     if (vowel_mode) {
         vowel_off(note);
         return;
@@ -287,6 +391,113 @@ static void mb_take(void)
         }
     }
     mb_full = 0;
+}
+
+/* The beatbox (0.7.0, SEQ): CHIMERA's step sequencer runs here in the audio interrupt, on the voice's clock, so its
+ * hits are sample-accurate (engine/ch_beat.c); the main loop sends the beat (its steps, tempo, swing, playing) as one
+ * struct and a flag, and the pads through a small ring. A pad sounds as soon as the mouth can make it (its lead-in) */
+#define BEAT_STEPS 16
+typedef struct {
+    ch_beat_step_t s[BEAT_STEPS];
+    float bpm, swing;
+    uint8_t play;
+} beat_cmd_t;
+static beat_cmd_t bc_out;
+static volatile uint8_t bc_dirty;
+#define PQ 8u
+static volatile uint32_t pq_head, pq_tail;
+static volatile uint8_t pq_id[PQ], pq_note[PQ], pq_acc[PQ];
+static volatile int8_t beat_now = -1;         /* the step under the playhead (shown), -1: stopped */
+static volatile int8_t beat_sound = -1;       /* the sound heard last (shown): a step's or a pad's */
+static volatile uint32_t beat_sound_at;       /* when, in blocks (beat_blocks: n_blk restarts with each timing
+                                              * readout, every half second; the name flickered back and forth) */
+static volatile uint32_t beat_blocks;         /* audio blocks since boot, for that */
+
+/* audio interrupt: CHIMERA's close-mic chain for the beatbox (src/audio/AudioEngine.ts: a 120 Hz low shelf +9 dB, the
+ * proximity effect; a 3.5 kHz presence peak +3 dB, Q 0.8; a fast compressor, -28 dB, knee 8, ratio 5, attack 2 ms,
+ * release 120 ms, with WebAudio's own make-up gain; then x2.2), a sample at a time, a soft limit after it. The filters'
+ * coefficients are WebAudio's biquads' at 44.1 kHz (lab: RBJ's cookbook) */
+static float mic_z[4], mic_env, mic_gain = 1.0f;
+static uint8_t mic_count;
+static float mic(float x)
+{
+    static const float S[5] = {1.006353372f, -1.981182394f, 0.975315220f, -1.981339238f, 0.981511748f};
+    static const float P[5] = {1.082903165f, -1.403469951f, 0.515178678f, -1.403469951f, 0.598081843f};
+    float y, a;
+    y = S[0] * x + mic_z[0];                  /* (transposed direct form II) */
+    mic_z[0] = S[1] * x - S[3] * y + mic_z[1];
+    mic_z[1] = S[2] * x - S[4] * y;
+    x = y;
+    y = P[0] * x + mic_z[2];
+    mic_z[2] = P[1] * x - P[3] * y + mic_z[3];
+    mic_z[3] = P[2] * x - P[4] * y;
+    a = fm_fabsf(y);
+    mic_env += (a - mic_env) * (a > mic_env ? 0.0112738f : 0.000188947f);
+    if (++mic_count >= 8u) {                  /* the gain, every 8 samples: the knee's curve in dB */
+        const float lvl = 6.0206f * fm_log2f(mic_env + 1e-9f), over = lvl + 28.0f;
+        float gr = 0.0f, goal;
+        mic_count = 0;
+        if (over > 4.0f)
+            gr = over * 0.8f;
+        else if (over > -4.0f)
+            gr = 0.8f * (over + 4.0f) * (over + 4.0f) / 16.0f;
+        goal = fm_exp2f((13.44f + 6.85f - gr) / 6.0206f);   /* WebAudio's make-up (+13.4 dB here), then x2.2 */
+        mic_gain += (goal - mic_gain) * 0.5f;
+    }
+    y *= mic_gain;
+    a = fm_fabsf(y);
+    if (a > 0.7f)                             /* the soft limit: nothing past 1 */
+        y = (y < 0 ? -1.0f : 1.0f) * (0.7f + 0.3f * (1.0f - fm_exp2f(-(a - 0.7f) * 4.8f)));
+    return y;
+}
+
+/* audio interrupt: the beat and the pads, now */
+static void beat_take(void)
+{
+    if (bc_dirty) {
+        ch_beat_set_steps(&seq, bc_out.s, BEAT_STEPS);
+        ch_beat_set_tempo(&seq, bc_out.bpm, bc_out.swing);
+        if (bc_out.play && !seq.playing)
+            ch_beat_start(&seq, ctl.clock);
+        else if (!bc_out.play && seq.playing)
+            ch_beat_stop(&seq);
+        bc_dirty = 0;
+    }
+    while (pq_tail != pq_head) {
+        const uint32_t i = pq_tail % PQ;
+        const int id = pq_id[i];
+        ch_gesture_t g[CH_BEAT_MAX_G];
+        ch_plan_t o;
+        int j;
+        o.g = g;
+        o.cap = CH_BEAT_MAX_G;
+        o.n = 0;
+        o.dropped = 0;
+        ch_beat_build(id, ch_midi_hz((float)(pq_note[i] ? pq_note[i] : CH_BEAT_NOTE)), 0.18f, pq_acc[i] ? CH_BEAT_ACCENT : 1.0f,
+                      ctl.clock + ch_beat_lead_in(id), &o);
+        for (j = 0; j < o.n; j++)
+            ch_score_add(&ctl.score, &g[j]);
+        beat_sound = (int8_t)id;
+        beat_sound_at = beat_blocks;
+        pq_tail++;
+    }
+}
+
+/* audio interrupt: the steps whose hits come within the horizon, into the score; the playhead for the screen */
+static void beat_tick(void)
+{
+    int s;
+    if (!seq.playing) {
+        beat_now = -1;
+        return;
+    }
+    ch_beat_tick(&seq, ctl.clock, &ctl.score);
+    s = ch_beat_step_at(&seq, ctl.clock);
+    if (s != beat_now && s >= 0 && seq.steps[s].id >= 0) {
+        beat_sound = seq.steps[s].id;
+        beat_sound_at = beat_blocks;
+    }
+    beat_now = (int8_t)s;
 }
 
 static void nq_push(uint32_t note, uint32_t vel)   /* audio interrupt */
@@ -361,13 +572,46 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
     float gain = (float)master_q12 / 4096.0f * 8300000.0f * BODY_GAIN[body_audio];   /* MASTER, read once a block */
     int on2;
     midi_in();
+    beat_blocks++;
     mb_take();
     vp_take();
-    if (body_req != body_audio) {            /* another body (CHIMERA's set_body): its anatomy, the waveguide anew. Here, as
+    beat_take();
+    cm_take();
+    if (body_req != body_audio || (body_req == BODY_SEAL && cre_req != cre_audio)) {   /* another body (CHIMERA's set_body): its anatomy, the waveguide anew. Here, as
                                               * the block starts, the second core is idle; this block's shapes were the
                                               * old body's, so it renders none; the sound fades back in (gain_now) */
         int s2;
         body_audio = body_req;
+        seal_audio = body_audio == BODY_SEAL;
+        bird_audio = 0;
+        if (seal_audio) {                     /* the Bestiary: its creature's voice anew */
+            cre_audio = cre_req;
+            ch_cvoice_init(&cvoice, CRE_DEF[cre_audio]);
+            cm_seen = cm_out.call_seq;        /* (no call carried over) */
+            cm_dirty = 1;                     /* (its settings again, into the new voice) */
+        }
+        if (seal_audio && cre_audio == 1) {   /* the songbird: its airway at rest */
+            ch_bird_init(&bird, &cvoice);
+            bird_audio = 1;
+            for (s2 = 0; s2 < NSUB; s2++)
+                steps[cur][s2].has_shape = 0;
+            gain_now = 0.0f;
+            goto switched;
+        }
+        if (seal_audio) {                     /* the seal: its waveguide (CHIMERA's mammal glottal port, its output gain
+                                               * x2.2: the balance against the human voice CHIMERA's renders have, the
+                                               * FM-1's voice being 4 dB over CHIMERA's and its seal 3 dB under) */
+            ch_wave_init(&wave, (float)VM_FS, VM_CTRL, 1.0f, CH_SEAL_LEN);
+            wave.output_gain = CH_SEAL_GAIN * 2.2f;
+            wave.port_len = 0.4f;
+            wave.port_slit = 1.8f;
+            wave.wall_rad = 0.6f;
+            ch_seal_init(&seal);
+            for (s2 = 0; s2 < NSUB; s2++)
+                steps[cur][s2].has_shape = 0;
+            gain_now = 0.0f;
+            goto switched;
+        }
         body_tract_setup(&tract, body_audio);
         ctl.k = CH_BODIES[body_audio].scale;
         ch_tract_apply(&tract, ctl.x, 0.0f);
@@ -376,6 +620,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         for (s2 = 0; s2 < NSUB; s2++)
             steps[cur][s2].has_shape = 0;
         gain_now = 0.0f;
+    switched:;
     }
     if (n > APP_BLOCK)
         n = APP_BLOCK;
@@ -383,7 +628,9 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
      * the output is silence and the voice keeps its state as it was. A note wakes it: the first block renders from
      * the targets of the block before the rest (one block, 5.8 ms, before the new ones arrive). v0.0.1 / v0.0.2 ran
      * the whole voice in silence too: on the FM-1 that kept the audio overloaded (a constant sound). */
-    if (resting && ctl.score.n == 0 && ctl.gate_target <= 0.0f) {
+    beat_tick();                             /* (before the rest: a beat playing wakes the voice and keeps it awake) */
+    if (resting && (seal_audio ? cvoice.gate_target <= 0.0f && cvoice.call < 0
+                               : ctl.score.n == 0 && ctl.gate_target <= 0.0f && !seq.playing)) {
         for (i = 0; i < 2u * n; i++)
             lr[i] = 0;
         n_blk++;                                 /* (a resting block costs nothing: it counts as 0 %) */
@@ -413,7 +660,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         for (i = 0; i < n; i++) {
             float x;
             gain_now += (gain - gain_now) * 0.004f;              /* ~5 ms: turning MASTER does not click */
-            x = vbuf[i] * gain_now;
+            x = (bt.on ? mic(vbuf[i]) : vbuf[i]) * gain_now;   /* (the beatbox: the close mic) */
             lr[2 * i] = (int32_t)x;
             lr[2 * i + 1] = (int32_t)x;
             if (fm_fabsf(vbuf[i]) > peak)
@@ -442,7 +689,9 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         }
 #endif
         /* rest once the score has played out, the breath gone and the output below 16-bit silence for a while */
-        if (ctl.score.n == 0 && !mb_full && ctl.gate_target <= 0.0f && ctl.gate < 1e-4f && peak < 2e-6f) {
+        if ((seal_audio ? cvoice.gate_target <= 0.0f && cvoice.call < 0 && cvoice.gate < 1e-4f
+                        : ctl.score.n == 0 && !mb_full && ctl.gate_target <= 0.0f && ctl.gate < 1e-4f && !seq.playing)
+            && peak < 2e-6f) {
             if (++quiet_blocks >= QUIET_BLOCKS)
                 resting = 1;
         } else {
@@ -486,6 +735,9 @@ void app_init(void)
     words_select(set.slot);
     presets_load();
     preset_apply(set.preset);
+    beats_load();
+    creatures_load();
+    bt.on = bt.edit = bt.play = bt.dirty = bt.slot = bt.cur = 0;
     two_cores = plat_cpu2_set(1) == 0;       /* else one core: the waveguide runs here too */
 }
 
@@ -796,8 +1048,8 @@ static const char *const PAGE_NAME[NPAGES] = {"SING", "SHAPE", "MOUTH", "SOURCE"
 #define PAD_F2_HI 2700.0f
 /* (a female's or a child's vowels sit higher: the ranges scale by the body's calibrated vowels, so a place on the pad,
  * and a snapshot, is the same vowel in any body) */
-static float pad_f1(float open) { return CH_BODIES[body_cur].pad_f1 * PAD_F1_LO * fm_exp2f(open * fm_log2f(PAD_F1_HI / PAD_F1_LO)); }
-static float pad_f2(float front) { return CH_BODIES[body_cur].pad_f2 * PAD_F2_HI * fm_exp2f(-front * fm_log2f(PAD_F2_HI / PAD_F2_LO)); }
+static float pad_f1(float open) { return CH_BODIES[body_hum].pad_f1 * PAD_F1_LO * fm_exp2f(open * fm_log2f(PAD_F1_HI / PAD_F1_LO)); }
+static float pad_f2(float front) { return CH_BODIES[body_hum].pad_f2 * PAD_F2_HI * fm_exp2f(-front * fm_log2f(PAD_F2_HI / PAD_F2_LO)); }
 
 /* the voice presets (this firmware's own: CHIMERA has none) and the vowel snapshots, as the store keeps them */
 #define NSNAP 12
@@ -912,6 +1164,17 @@ static void vp_send(void)
     p.target[CH_EPILARYNX] = kv[K_RING];
     p.target[CH_VENTRICULAR] = kv[K_FALSE];
     p.gate = vowel_mode && n_vkeys ? vowel_breath : 0.0f;
+    if (bt.on) {                              /* the beatbox: a beatboxer's ready posture, the breath off (the sounds
+                                               * bring their own), as CHIMERA's beatbox mode */
+        ch_real r[CH_NARTIC];
+        ch_beat_ready(r);
+        for (k = 0; k < CH_NARTIC; k++)
+            if (r[k] == r[k])
+                p.target[k] = r[k];
+        p.src.f0 = 100.0f;
+        p.src.vibrato_depth = 0.0f;
+        p.gate = 0.0f;
+    }
     live.vibrato = kv[K_VIB];
     speech_rate = kv[K_SPEED];
     vp_dirty = 0;                             /* (the interrupt does not take a half-written one) */
@@ -986,10 +1249,14 @@ static void knob_turn(int id, int32_t e)
     float v = kv[id];
     if (d->fmt == F_BODY) {                   /* ALGORITHM: the body, chosen now, switched when the knob rests */
         int i = (body_pending >= 0 ? body_pending : body_cur) + (int)e;
+        if (body_cur == BODY_SEAL) {            /* the Bestiary: its creature */
+            creature_pick(e);
+            return;
+        }
         i = i < 0 ? 0 : i >= NBODIES ? NBODIES - 1 : i;
         body_pending = (int8_t)i;
         body_turned_at = plat_ms();
-        app_say("BODY", CH_BODIES[i].name);
+        app_say("BODY", body_name(i));
         return;
     }
     v = d->log ? v * fm_exp2f((float)e * fm_log2f(d->step)) : v + (float)e * d->step;
@@ -1026,7 +1293,7 @@ static void knob_text(int id, char *b)
             text_cat(b, d);
         }
         break;
-    case F_BODY: text_cat(b, CH_BODIES[(int)(v + 0.5f) % NBODIES].name); break;
+    case F_BODY: text_cat(b, body_name((int)(v + 0.5f) % NBODIES)); break;
     case F_F2: int_text((int32_t)(pad_f2(v) + 0.5f), b); break;
     case F_F1: int_text((int32_t)(pad_f1(v) + 0.5f), b); break;
     }
@@ -1035,6 +1302,7 @@ static void knob_text(int id, char *b)
 /* the body the knobs hold (ALGORITHM, or a preset's): the front end's calibrated tables and the drawn head at once,
  * the audio's anatomy at its next block (app_render) */
 static void home_body(void);
+static void seal_mode_changed(void);
 static void body_apply(void)
 {
     int b = (int)(kv[K_BODY] + 0.5f);
@@ -1043,8 +1311,10 @@ static void body_apply(void)
     if (b == body_cur)
         return;
     body_cur = (uint8_t)b;
+    body_hum = (uint8_t)b;                    /* a human: its tables and its head */
     ch_speech_body(b);
     home_body();
+    seal_mode_changed();
     body_req = (uint8_t)b;
 }
 
@@ -1690,6 +1960,444 @@ static void ed_input(uint32_t keys, uint32_t btn, uint32_t now)
     }
 }
 
+static void body_settle(uint32_t now)          /* ALGORITHM at rest: the body switches */
+{
+    if (body_pending >= 0 && now - body_turned_at >= 400u) {
+        kv[K_BODY] = (float)body_pending;
+        body_pending = -1;
+        set_dirty = 1;
+        body_apply();
+        vp_send();
+        ui.redraw = 1;
+    }
+}
+
+/* ------------------------------------------------------------------- the Bestiary --- */
+/* LFO (0.7.0): CHIMERA's Bestiary in place of the human voice, ALGORITHM choosing the creature: the seal, the songbird.
+ * The keys play its pitch (its breath on while one is held, the last held sounding), SEL turns its two pages of
+ * settings on K1-K4, PRESET picks a call, PLAY plays it at its own pitch, FX + a key at the key's. SAVE keeps each
+ * one's settings and call (OBJ_CREATURES) */
+#define CREATURES_MAGIC 0x32524352u           /* "CRC2" */
+static struct {
+    uint32_t magic;
+    float set[NCRE][CH_CP_MAX];
+    uint8_t call[NCRE], which, rsv[1];
+} cre;
+static uint8_t seal_page;                     /* its settings' page, 0 or 1 */
+static int32_t skeys[16];                     /* its keys down, oldest first (MIDI notes) */
+static int n_skeys;
+static uint8_t seal_seq;                      /* (a call's number for the mailbox) */
+static int8_t seal_playing = -1;              /* the call played last (shown), -1 none */
+static uint32_t seal_played_at;
+static const int8_t CRE_PAGE[NCRE][2][4] = {
+    {{CH_SEAL_PULSE_RATE, CH_SEAL_PULSE, CH_SEAL_DUTY, CH_SEAL_BRIGHT}, {CH_SEAL_ROUGH, CH_SEAL_PRESSURE, CH_SEAL_MOUTH, -1}},
+    {{CH_BIRD_INTERVAL, CH_BIRD_VOICES, CH_BIRD_DRIVE, CH_BIRD_TENSION}, {CH_BIRD_PRESSURE, CH_BIRD_PURITY, CH_BIRD_OEC, CH_BIRD_GAPE}}};
+static const char *const CRE_PAGE_NAME[NCRE][2] = {{"PULSE", "VOICE"}, {"SYRINX", "THROAT"}};
+#define CRE (CRE_DEF[cre.which])
+
+static void creatures_load(void)
+{
+    int i, c;
+    if (plat_store_load(OBJ_CREATURES, &cre, sizeof cre) == (int)sizeof cre && cre.magic == CREATURES_MAGIC
+        && cre.which < NCRE && cre.call[0] < CH_SEAL.ncalls && cre.call[1] < CH_BIRD.ncalls)
+        return;
+    cre.magic = CREATURES_MAGIC;
+    for (c = 0; c < NCRE; c++) {
+        for (i = 0; i < CH_CP_MAX; i++)
+            cre.set[c][i] = i < CRE_DEF[c]->np ? CRE_DEF[c]->p[i].def : 0.0f;
+        cre.call[c] = 0;
+    }
+    cre.which = 0;
+}
+
+/* the creature's settings, its keys' pitch and breath, a call (call >= 0: play it at pitch, Hz; 0 its own; -2: none) */
+static void cm_send(int call, float pitch)
+{
+    cmail_t m;
+    int i;
+    for (i = 0; i < CH_CP_MAX; i++)
+        m.perf[i] = cre.set[cre.which][i];
+    if (n_skeys)
+        m.perf[0] = ch_ckey_hz(&CRE->p[0], (float)skeys[n_skeys - 1]);   /* (each creature's pitch: setting 0) */
+    m.gate = n_skeys ? 1.0f : 0.0f;
+    m.call = cm_out.call;
+    m.call_seq = cm_out.call_seq;
+    m.call_pitch = cm_out.call_pitch;
+    if (call != -2) {
+        m.call = (int8_t)call;
+        m.call_pitch = pitch;
+        m.call_seq = ++seal_seq;
+        if (call >= 0) {
+            seal_playing = (int8_t)call;
+            seal_played_at = plat_ms();
+        }
+    }
+    cm_dirty = 0;
+    cm_out = m;
+    cm_dirty = 1;
+}
+
+static void seal_mode_changed(void)           /* into the Bestiary, out of it, or another creature: the notes stop */
+{
+    n_skeys = 0;
+    voice_note = -1;
+    seal_playing = -1;
+    if (body_cur == BODY_SEAL) {
+        if (vowel_mode)
+            mode_set(0);
+        pend.n = pend.n_release = 0;
+        pend.clear = 1;
+        live.sounding = 0;
+        live.n_keys = 0;
+        mb_post();
+        seal_page = 0;
+    }
+    cre_req = cre.which;
+    cm_send(-1, 0.0f);
+}
+
+static void seal_on(int32_t note)
+{
+    int i, j = 0;
+    for (i = 0; i < n_skeys; i++)
+        if (skeys[i] != note)
+            skeys[j++] = skeys[i];
+    n_skeys = j;
+    if (n_skeys < 16)
+        skeys[n_skeys++] = note;
+    voice_note = note;
+    cm_send(-2, 0.0f);
+}
+
+static void seal_off(int32_t note)
+{
+    int i, j = 0;
+    for (i = 0; i < n_skeys; i++)
+        if (skeys[i] != note)
+            skeys[j++] = skeys[i];
+    n_skeys = j;
+    voice_note = n_skeys ? skeys[n_skeys - 1] : -1;
+    cm_send(-2, 0.0f);
+}
+
+static void seal_call(int32_t note)           /* the call PRESET picked (note < 0: at its own pitch) */
+{
+    const int c = cre.call[cre.which];
+    const float hz = note >= 0 ? ch_ckey_hz(&CRE->p[0], (float)note) : 0.0f;
+    cm_send(c, hz);
+    app_say(CRE->calls[c].name, CRE->calls[c].hint);
+}
+
+static void creature_pick(int32_t e)          /* ALGORITHM on the Bestiary page: the next creature */
+{
+    cre.which = (uint8_t)(((cre.which + e) % NCRE + NCRE) % NCRE);
+    set_dirty = 1;
+    seal_mode_changed();
+    app_say("CREATURE", CRE->name);
+    ui.redraw = 1;
+}
+
+/* LFO: the Bestiary page in place of the human voice, and back to the body ALGORITHM holds */
+static void bestiary_toggle(void)
+{
+    if (body_cur != BODY_SEAL) {
+        body_cur = BODY_SEAL;
+        body_pending = -1;
+        seal_mode_changed();
+        body_req = BODY_SEAL;
+        app_say("BESTIARY", CRE->name);
+    } else {
+        body_cur = 0xFFu;                     /* (so body_apply switches) */
+        body_apply();
+        app_say("HUMAN", body_name(body_cur));
+    }
+    ui.redraw = 1;
+}
+
+static void seal_knob(int k, int32_t e)       /* K1..K4: the page's settings (log ones a semitone a detent) */
+{
+    const int id = CRE_PAGE[cre.which][seal_page][k];
+    const ch_cparam_t *p;
+    float v;
+    if (id < 0)
+        return;
+    p = &CRE->p[id];
+    v = cre.set[cre.which][id];
+    v = p->log ? v * fm_exp2f((float)e / 12.0f) : v + (float)e * (p->max - p->min) / 50.0f;
+    cre.set[cre.which][id] = fm_clampf(v, p->min, p->max);
+    set_dirty = 1;
+    cm_send(-2, 0.0f);
+}
+
+static void seal_text(int id, char *b)        /* a setting as the screen shows it */
+{
+    const ch_cparam_t *p = &CRE->p[id];
+    const float v = cre.set[cre.which][id];
+    b[0] = 0;
+    if (p->unit[0] == 'S' && p->unit[1] == 'T') {   /* semitones, signed */
+        if (v > 0.05f)
+            text_cat(b, "+");
+        fmt1(v, b + (v > 0.05f));
+    } else if (p->unit[0]) {
+        fmt1(v, b);
+        if (v >= 100.0f)
+            int_text((int32_t)(v + 0.5f), b);
+    } else {
+        int_text((int32_t)((v - p->min) / (p->max - p->min) * 100.0f + 0.5f), b);
+        text_cat(b, "%");
+    }
+}
+
+static void seal_page_say(void)
+{
+    char t[24] = "PAGE ";
+    t[5] = (char)('1' + seal_page);
+    t[6] = ':';
+    t[7] = ' ';
+    t[8] = 0;
+    text_cat(t, CRE_PAGE_NAME[cre.which][seal_page]);
+    app_say(CRE->name, t);
+}
+
+/* ------------------------------------------------------------------- the beatbox --- */
+/* SEQ (0.7.0): CHIMERA's beatboxer. The white keys are pads for its sounds (the lowest nine: kick, snare, hi-hat,
+ * open hat, rimshot, inward snare, tongue click, lip pop, crash; the next seven again from the kick), the black keys
+ * hum the bass an octave below the key. PLAY starts and stops the beat; PRESET picks one of eight (CHIMERA's seven
+ * and one empty), K1 the tempo, K2 the swing. EDIT writes steps: K3 (or the pads) moves the cursor, a pad writes its
+ * sound into the step (FX held: accented), OCT- clears it and goes back, OCT+ clears it and goes on. SAVE keeps the
+ * beats; HOME or SEQ leaves. */
+#define NBEATS 8
+#define BEATS_MAGIC 0x31544542u               /* "BET1" */
+typedef struct {
+    uint32_t magic;
+    struct {
+        ch_beat_step_t s[BEAT_STEPS];
+        uint8_t bpm, swing;                   /* bpm 40..200; swing in % (0..60) */
+    } b[NBEATS];
+} beats_t;
+static beats_t beats PLAT_POOL;
+static const uint8_t PADS[9] = {CH_BEAT_KICK, CH_BEAT_SNARE, CH_BEAT_HAT, CH_BEAT_OPEN_HAT, CH_BEAT_RIMSHOT,
+                                CH_BEAT_INWARD, CH_BEAT_CLICK, CH_BEAT_LIP_POP, CH_BEAT_CRASH};
+
+static const char *beat_name(int i) { return i < CH_BEAT_NPRESETS ? CH_BEAT_PRESETS[i].name : "MY BEAT"; }
+
+static void beat_factory(int i)               /* CHIMERA's preset (or an empty beat) */
+{
+    int j, n = 0;
+    for (j = 0; j < BEAT_STEPS; j++) {
+        beats.b[i].s[j].id = -1;
+        beats.b[i].s[j].note = beats.b[i].s[j].accent = 0;
+    }
+    beats.b[i].bpm = 96;
+    beats.b[i].swing = 0;
+    if (i < CH_BEAT_NPRESETS) {
+        n = ch_beat_parse(CH_BEAT_PRESETS[i].text, beats.b[i].s, BEAT_STEPS);
+        beats.b[i].bpm = (uint8_t)(CH_BEAT_PRESETS[i].bpm + 0.5f);
+        beats.b[i].swing = (uint8_t)(CH_BEAT_PRESETS[i].swing * 100.0f + 0.5f);
+    }
+    (void)n;
+}
+
+static void beats_load(void)
+{
+    int i;
+    if (plat_store_load(OBJ_BEATS, &beats, sizeof beats) == (int)sizeof beats && beats.magic == BEATS_MAGIC)
+        return;
+    beats.magic = BEATS_MAGIC;
+    for (i = 0; i < NBEATS; i++)
+        beat_factory(i);
+}
+
+/* the beat shown, to the audio interrupt (and whether it plays) */
+static void beat_send(void)
+{
+    beat_cmd_t c;
+    int j;
+    for (j = 0; j < BEAT_STEPS; j++)
+        c.s[j] = beats.b[bt.slot].s[j];
+    c.bpm = (float)beats.b[bt.slot].bpm;
+    c.swing = (float)beats.b[bt.slot].swing / 100.0f;
+    c.play = bt.play;
+    bc_dirty = 0;
+    bc_out = c;
+    bc_dirty = 1;
+}
+
+/* a key's pad: its sound (and the hum's note), -1 none */
+static int beat_pad_of(uint32_t k, uint8_t *note)
+{
+    static const uint8_t WK[16] = PLAT_WHITE_KEYS, BK[11] = PLAT_BLACK_KEYS;
+    int i;
+    *note = 0;
+    for (i = 0; i < 16; i++)
+        if (WK[i] == k)
+            return PADS[i % 9];
+    for (i = 0; i < 11; i++)
+        if (BK[i] == k) {
+            *note = (uint8_t)clamp(53 + (int32_t)k + 12 * set.octave - 12, 24, 96);
+            return CH_BEAT_HUM;
+        }
+    return -1;
+}
+
+static void beat_pad(int id, uint8_t note, uint8_t acc)   /* a pad, as soon as the mouth can make it */
+{
+    const uint32_t h = pq_head;
+    if (h - pq_tail >= PQ)
+        return;
+    pq_id[h % PQ] = (uint8_t)id;
+    pq_note[h % PQ] = note;
+    pq_acc[h % PQ] = acc;
+    pq_head = h + 1;
+}
+
+static void beat_note(int32_t note)
+{
+    const int32_t k = note - 53 - 12 * set.octave;
+    uint8_t nt;
+    int id;
+    if (k >= 0 && k < NKEYS && (id = beat_pad_of((uint32_t)k, &nt)) >= 0)
+        beat_pad(id, nt, 0);
+}
+
+static void beat_say(const char *what)
+{
+    char t[24] = "";
+    int_text(bt.slot + 1, t);
+    text_cat(t, " ");
+    text_cat(t, beat_name(bt.slot));
+    app_say(what, t);
+}
+
+static void beat_open(void)
+{
+    if (vowel_mode)
+        mode_set(0);
+    pend.n = pend.n_release = 0;               /* the words' notes stop: their gestures go */
+    pend.clear = 1;
+    live.sounding = 0;
+    live.n_keys = 0;
+    voice_note = -1;
+    mb_post();
+    bt.on = 1;
+    bt.edit = 0;
+    bt.play = 0;
+    vp_send();
+    beat_send();
+    beat_say("BEAT");
+}
+
+static void beat_close(void)
+{
+    bt.play = 0;
+    beat_send();
+    bt.on = 0;
+    bt.edit = 0;
+    vp_send();
+    app_say(bt.dirty ? "BEAT UNSAVED" : "WORDS", bt.dirty ? "SAVE IN BEAT" : "KEYS SING");
+}
+
+static void beat_save(void)
+{
+    if (plat_store_save(OBJ_BEATS, &beats, sizeof beats) == 0) {
+        bt.dirty = 0;
+        beat_say("SAVED");
+    } else {
+        app_say("SAVE", "FAILED");
+    }
+}
+
+static void beat_set(uint8_t cur, int id, uint8_t note, uint8_t acc)   /* a step written (id -1: cleared) */
+{
+    ch_beat_step_t *s = &beats.b[bt.slot].s[cur];
+    s->id = (int8_t)id;
+    s->note = id == CH_BEAT_HUM ? note : 0;
+    s->accent = id >= 0 ? acc : 0;
+    bt.dirty = 1;
+    beat_send();
+}
+
+static void bt_input(uint32_t keys, uint32_t btn, uint32_t now)
+{
+    uint32_t k;
+    int32_t e;
+    const uint8_t fx = (uint8_t)(btn >> B_FX & 1u);
+    for (k = 0; k < NKEYS; k++) {
+        uint8_t note;
+        int id;
+        if (!(keys >> k & 1u) || (ui.keys >> k & 1u) || (id = beat_pad_of(k, &note)) < 0)
+            continue;
+        beat_pad(id, note, fx);
+        if (bt.edit) {
+            beat_set(bt.cur, id, note, fx);
+            bt.cur = (uint8_t)((bt.cur + 1) % BEAT_STEPS);
+        }
+    }
+    for (k = 0; k < NB; k++) {
+        uint32_t bit = 1u << k;
+        if (!(btn & bit) || (ui.btn & bit))
+            continue;
+        if (k == B_PLAY) {
+            bt.play = (uint8_t)!bt.play;
+            beat_send();
+            beat_say(bt.play ? "PLAY" : "STOP");
+        } else if (k == B_EDIT) {
+            bt.edit = (uint8_t)!bt.edit;
+            app_say(bt.edit ? "STEP EDIT" : "PADS", bt.edit ? "PADS WRITE STEPS" : "PADS PLAY");
+        } else if (k == B_OCTDN) {
+            if (bt.edit) {                    /* clear the step, back one */
+                beat_set(bt.cur, -1, 0, 0);
+                bt.cur = (uint8_t)((bt.cur + BEAT_STEPS - 1) % BEAT_STEPS);
+            } else {
+                octave_step(-1);
+            }
+        } else if (k == B_OCTUP) {
+            if (bt.edit) {                    /* clear the step, on one */
+                beat_set(bt.cur, -1, 0, 0);
+                bt.cur = (uint8_t)((bt.cur + 1) % BEAT_STEPS);
+            } else {
+                octave_step(1);
+            }
+        } else if (k == B_SAVE) {
+            beat_save();
+        } else if (k == B_HOME || k == B_SEQ) {
+            beat_close();
+        }
+    }
+    for (k = 0; k < NE; k++) {
+        if ((e = plat_enc((int)k)) == 0)
+            continue;
+        ui.turns[k] += e;
+        ui.turned_at[k] = now;
+        ui.redraw = 1;
+        if (k == EN_K1) {                     /* tempo */
+            beats.b[bt.slot].bpm = (uint8_t)clamp(beats.b[bt.slot].bpm + e, 40, 200);
+            bt.dirty = 1;
+            beat_send();
+        } else if (k == EN_K2) {              /* swing */
+            beats.b[bt.slot].swing = (uint8_t)clamp(beats.b[bt.slot].swing + 2 * e, 0, 60);
+            bt.dirty = 1;
+            beat_send();
+        } else if (k == EN_K3) {              /* the step cursor */
+            bt.cur = (uint8_t)(((bt.cur + e) % BEAT_STEPS + BEAT_STEPS) % BEAT_STEPS);
+        } else if (k == EN_PRESET) {          /* another beat (playing on, from where it is) */
+            bt.slot = (uint8_t)(((bt.slot + e) % NBEATS + NBEATS) % NBEATS);
+            beat_send();
+            beat_say("BEAT");
+        } else if (k == EN_ALGO) {            /* Body, as everywhere */
+            knob_turn(K_BODY, e);
+        }
+    }
+    body_settle(now);
+    if (keys != ui.keys || btn != ui.btn)
+        ui.redraw = 1;
+    ui.keys = keys;
+    ui.btn = btn;
+    plat_glow(1);
+    plat_leds(btn | 1u << B_SEQ | (bt.play ? 1u << B_PLAY : 0u) | (bt.edit ? 1u << B_EDIT : 0u) | (bt.dirty ? 1u << B_SAVE : 0u),
+              keys | midi_keys(set.octave));
+}
+
 /* expression's targets, each pass: the hardest-pressed held key (not in the editor: its keys type), or MIDI in's
  * aftertouch while a MIDI note is held; the bend; the mod wheel into the source (vp_send) when it moves */
 static void expr_update(uint32_t keys)
@@ -1732,6 +2440,10 @@ static void input(void)
         ed_input(keys, btn, now);
         return;
     }
+    if (bt.on) {                             /* the beatbox: the keys are pads */
+        bt_input(keys, btn, now);
+        return;
+    }
     for (k = 0; k < NKEYS; k++) {            /* key 0 is F3 (MIDI 53) */
         uint32_t bit = 1u << k, v;
         int32_t note = 53 + (int32_t)k + 12 * set.octave;
@@ -1740,6 +2452,11 @@ static void input(void)
             ui.vel[k] = (uint8_t)v;
             ui.prs[k] = 0;
             ui.last_key = (int32_t)k;
+            if (fx_held && body_cur == BODY_SEAL) {   /* the seal: FX + key, its call at the key's pitch */
+                fx_used = 1;
+                seal_call(note);
+                continue;
+            }
             if (fx_held && k < NSNAP) {      /* FX + key: a vowel snapshot (VOWEL mode) */
                 char nm[12] = "SNAPSHOT ";
                 int_text((int32_t)k + 1, nm + 9);
@@ -1778,7 +2495,7 @@ static void input(void)
         snap_key = -1;
     }
     if ((ui.btn >> B_FX & 1u) && !fx_held) { /* FX released: alone, it switches WORDS <-> VOWEL */
-        if (!fx_used)
+        if (!fx_used && body_cur != BODY_SEAL)
             mode_set((uint8_t)!vowel_mode);
         fx_used = 0;
         snap_key = -1;
@@ -1796,17 +2513,30 @@ static void input(void)
         else if (k == B_HOME) {                  /* WORDS, page 1 */
             mode_set(0);
             page = 0;
+            seal_page = 0;
+        } else if (k == B_SEL && body_cur == BODY_SEAL) {   /* the seal's two pages */
+            seal_page ^= 1u;
+            seal_page_say();
         } else if (k == B_SEL) {                 /* pages 2-5 (EDIT until 0.5.0) */
             page = (uint8_t)(page >= 1 && page < 4 ? page + 1 : 1);
             app_say(PAGE_NAME[page], "");
         } else if (k == B_EDIT) {                /* the word editor, on the slot sung (from the next input) */
             ed_open();
+        } else if (k == B_LFO) {                 /* the Bestiary (0.7.0), and back */
+            bestiary_toggle();
+        } else if (k == B_SEQ) {                 /* the beatbox (0.7.0): a human body's */
+            if (body_cur == BODY_SEAL)
+                app_say("BEATBOX", "LFO: BACK TO HUMAN");
+            else
+                beat_open();
         } else if (k == B_REC && FM1B_BLE)
             ui.rec_t = plat_ms();                /* a press: on release (a hold switches Bluetooth) */
         else if (k == B_GLO) {                 /* the debug page (the timings) / the flat view */
             page_debug = (uint8_t)!page_debug;
             lcd_fill(0, 0, 240, 240, C_BLACK);
             ui.redraw = 1;
+        } else if (k == B_PLAY && body_cur == BODY_SEAL) {   /* the seal: its call */
+            seal_call(-1);
         } else if (k == B_PLAY) {                /* speak the slot's words (in WORDS) */
             mode_set(0);
             speak_text(lyric);
@@ -1816,7 +2546,8 @@ static void input(void)
             for (i = 0; i < NK; i++)
                 presets.v[set.preset][i] = kv[i];
             if (plat_store_save(OBJ_SETTINGS, &set, sizeof set) == 0
-                && plat_store_save(OBJ_PRESETS, &presets, sizeof presets) == 0) {
+                && plat_store_save(OBJ_PRESETS, &presets, sizeof presets) == 0
+                && plat_store_save(OBJ_CREATURES, &cre, sizeof cre) == 0) {
                 set_dirty = 0;
                 app_say("SAVED", PRESET_NAME[set.preset]);
             } else {
@@ -1848,6 +2579,9 @@ static void input(void)
         if (k == EN_ALGO && FM1B_BLE_CENTRAL && ui.looking) {
             btdev_choose(btdev_pick() + e);
             ble_device_say();
+        } else if (k == EN_SELECT && body_cur == BODY_SEAL) {
+            seal_page ^= 1u;                     /* (either way: two pages) */
+            seal_page_say();
         } else if (k == EN_SELECT) {             /* the page (VOWEL's in VOWEL mode) */
             const int n = vowel_mode ? NPAGES : NPAGES - 1;
             page = (uint8_t)((((int)page + e) % n + n) % n);
@@ -1867,6 +2601,11 @@ static void input(void)
             nm[6] = (char)('1' + set.slot);
             nm[7] = 0;
             app_say(nm, "");
+        } else if (k == EN_PRESET && body_cur == BODY_SEAL) {   /* the seal: its call */
+            const int n = CRE->ncalls, c = ((cre.call[cre.which] + e) % n + n) % n;
+            cre.call[cre.which] = (uint8_t)c;
+            set_dirty = 1;
+            app_say(CRE->calls[c].name, CRE->calls[c].hint);
         } else if (k == EN_PRESET) {             /* a voice preset: loaded when the knob rests */
             int i = preset_pending >= 0 ? preset_pending : set.preset;
             i = ((i + e) % NPRESETS + NPRESETS) % NPRESETS;
@@ -1876,18 +2615,13 @@ static void input(void)
             t[1] = (char)('1' + i);
             t[2] = 0;
             app_say(t, PRESET_NAME[i]);
+        } else if (k >= EN_K1 && k <= EN_K4 && body_cur == BODY_SEAL) {
+            seal_knob((int)(k - EN_K1), e);
         } else if (k >= EN_K1 && k <= EN_K4) {   /* the page's four values */
             knob_turn(PAGE[page][k - EN_K1], e);
         }
     }
-    if (body_pending >= 0 && now - body_turned_at >= 400u) {   /* ALGORITHM at rest: the body switches */
-        kv[K_BODY] = (float)body_pending;
-        body_pending = -1;
-        set_dirty = 1;
-        body_apply();
-        vp_send();
-        ui.redraw = 1;
-    }
+    body_settle(now);
     if (preset_pending >= 0 && now - preset_turned_at >= 400u) {
         preset_apply(preset_pending);
         preset_pending = -1;
@@ -1898,7 +2632,7 @@ static void input(void)
     ui.keys = keys;
     ui.btn = btn;
     plat_glow(1);                            /* the unlit buttons glow, readable in the dark */
-    plat_leds(btn | (set_dirty ? 1u << B_SAVE : 0u) | (vowel_mode ? 1u << B_FX : 0u),
+    plat_leds(btn | (set_dirty ? 1u << B_SAVE : 0u) | (vowel_mode ? 1u << B_FX : 0u) | (body_cur == BODY_SEAL ? 1u << B_LFO : 0u),
               keys | midi_keys(set.octave));     /* the keys pressed, and the notes MIDI in plays */
 }
 
@@ -2094,7 +2828,7 @@ static uint8_t head_ready;
 
 static void home_body(void)                  /* the drawn head's anatomy: the body's */
 {
-    body_tract_setup(&dtract, body_cur);
+    body_tract_setup(&dtract, body_hum);
     dtract.draw = 1;
     head_ready = 0;
     ui.redraw = 1;
@@ -2184,7 +2918,7 @@ static void draw_home(void)
             px = 232 - text_w(&FONT_XS, pn);
             cv_text(px, 7, &FONT_XS, pn, V_BLUE_MID);
             /* the body (ALGORITHM), before the preset */
-            cv_text(px - 8 - text_w(&FONT_XS, CH_BODIES[body_cur].name), 7, &FONT_XS, CH_BODIES[body_cur].name, V_BLUE_DIM);
+            cv_text(px - 8 - text_w(&FONT_XS, body_name(body_cur)), 7, &FONT_XS, body_name(body_cur), V_BLUE_DIM);
         }
     }
     cv_rect(8, HOME_TOP - 1, 224, 1, RGB(0x13, 0x39, 0x54));
@@ -2396,10 +3130,229 @@ static void draw_edit(void)
     cv_blit(0, ED_KB_Y + 56);
 }
 
+/* ------------------------------------------------------------- the beatbox's page --- */
+/* the head as it beatboxes, the sound heard (and how the air moves for it), the beat's sixteen steps (the playhead
+ * lit, the cursor outlined while editing), the knobs */
+#define BT_HEAD_H 120
+#define BT_GRID_Y (HOME_TOP + BT_HEAD_H)
+static uint16_t beat_role_col(int id)
+{
+    static const uint16_t C[5] = {V_GREEN, V_RED, V_PINK, V_WHITE, V_BLUE};   /* kick, snare, hat, perc, bass */
+    return id >= 0 && id < CH_BEAT_N ? C[CH_BEAT_SOUNDS[id].role] : V_BLUE_DIM;
+}
+
+static void draw_beat(void)
+{
+    static const char *const AIR[5] = {"BREATH OUT", "EJECTIVE", "CLICK", "BREATH IN", "HUMMED"};
+    const int now_step = beat_now, cur = bt.edit ? bt.cur : -1;
+    const int heard = beat_sound >= 0 && beat_blocks - beat_sound_at < 60u ? beat_sound : -1;   /* (~0.35 s) */
+    char t[24];
+    int32_t x, y0, i;
+    /* the header: the beat and its tempo (or a message for a moment) */
+    cv_begin(240, HOME_TOP, C_BLACK);
+    if (plat_ms() < ui.msg_until) {
+        x = cv_text(8, 4, &FONT_B, ui.msg[0], V_WHITE);
+        cv_text(x + 8, 4, &FONT_B, ui.msg[1], V_BLUE);
+    } else {
+        x = cv_text(8, 7, &FONT_XS, "BEAT", V_BLUE);
+        t[0] = 0;
+        int_text(bt.slot + 1, t);
+        text_cat(t, " ");
+        text_cat(t, beat_name(bt.slot));
+        x = cv_text(x + 8, 7, &FONT_XS, t, V_WHITE);
+        if (bt.dirty)
+            cv_text(x + 8, 7, &FONT_XS, "UNSAVED", RGB(0xff, 0xb3, 0x40));
+        int_text(beats.b[bt.slot].bpm, t);
+        text_cat(t, " BPM");
+        cv_text(232 - text_w(&FONT_XS, t), 7, &FONT_XS, t, V_BLUE_MID);
+    }
+    cv_rect(8, HOME_TOP - 1, 224, 1, RGB(0x13, 0x39, 0x54));
+    cv_blit(0, 0);
+    /* the head, and the sound beside it */
+    head_s = (float)BT_HEAD_H / (CH_VIEW_Y1 - CH_VIEW_Y0);
+    head_x0 = 2.0f;
+    head_y0 = (float)HOME_TOP;
+    for (y0 = HOME_TOP; y0 < HOME_TOP + BT_HEAD_H; y0 += BT_HEAD_H / 2) {
+        cv_begin(240, BT_HEAD_H / 2, C_BLACK);
+        if (head_ready)
+            draw_head(y0);
+        cv_text(112, HOME_TOP + 6 - y0, &FONT_XS, bt.edit ? "STEP EDIT" : bt.play ? "PLAYING" : "PADS", bt.edit ? V_GREEN : V_BLUE_MID);
+        if (heard >= 0) {
+            cv_text(112, HOME_TOP + 22 - y0, &FONT_M, CH_BEAT_SOUNDS[heard].name, beat_role_col(heard));
+            cv_text(112, HOME_TOP + 50 - y0, &FONT_XS, AIR[CH_BEAT_SOUNDS[heard].air], V_BLUE);
+        } else {
+            cv_text(112, HOME_TOP + 22 - y0, &FONT_M, "READY", V_BLUE_DIM);
+        }
+        cv_text(112, HOME_TOP + 84 - y0, &FONT_XS, "PLAY  START / STOP", V_BLUE_DIM);
+        cv_text(112, HOME_TOP + 98 - y0, &FONT_XS, bt.edit ? "OCT-/+  CLEAR STEP" : "EDIT  WRITE STEPS", V_BLUE_DIM);
+        cv_blit(0, (uint32_t)y0);
+    }
+    /* the steps: two rows of eight, each its sound's symbol in its role's colour */
+    cv_begin(240, 60, C_BLACK);
+    cv_rect(8, 0, 224, 1, RGB(0x13, 0x39, 0x54));
+    for (i = 0; i < BEAT_STEPS; i++) {
+        const ch_beat_step_t *s = &beats.b[bt.slot].s[i];
+        const int32_t cx = 8 + (i % 8) * 28, cy = 6 + (i / 8) * 27;
+        const uint16_t col = beat_role_col(s->id);
+        const int lit = i == now_step;
+        const char *sym = s->id >= 0 ? CH_BEAT_SOUNDS[s->id].id : (i % 4 == 0 ? "|" : ".");
+        cv_rect(cx, cy, 26, 24, lit ? (s->id >= 0 ? col : V_BLUE_DIM) : RGB(0x0b, 0x22, 0x33));
+        if (i == cur) {                       /* the cursor: an outline */
+            cv_rect(cx, cy, 26, 2, V_WHITE);
+            cv_rect(cx, cy + 22, 26, 2, V_WHITE);
+            cv_rect(cx, cy, 2, 24, V_WHITE);
+            cv_rect(cx + 24, cy, 2, 24, V_WHITE);
+        }
+        if (s->accent && s->id >= 0)
+            cv_rect(cx + 20, cy + 3, 3, 3, lit ? C_BLACK : col);
+        cv_text(cx + (26 - text_w(&FONT_XS, sym)) / 2, cy + 5, &FONT_XS, sym, lit ? C_BLACK : s->id >= 0 ? col : V_BLUE_DIM);
+    }
+    cv_blit(0, BT_GRID_Y);
+    /* the knobs, in their colours */
+    cv_begin(240, 240 - BT_GRID_Y - 60, C_BLACK);
+    x = cv_text(8, 6, &FONT_XS, "K1", V_GREEN);
+    int_text(beats.b[bt.slot].bpm, t);
+    x = cv_text(x + 4, 6, &FONT_XS, "TEMPO", V_BLUE_MID);
+    x = cv_text(x + 4, 6, &FONT_XS, t, V_GREEN);
+    x = cv_text(x + 10, 6, &FONT_XS, "K2", V_RED);
+    x = cv_text(x + 4, 6, &FONT_XS, "SWING", V_BLUE_MID);
+    int_text(beats.b[bt.slot].swing, t);
+    text_cat(t, "%");
+    x = cv_text(x + 4, 6, &FONT_XS, t, V_RED);
+    x = cv_text(x + 10, 6, &FONT_XS, "K3", V_PINK);
+    x = cv_text(x + 4, 6, &FONT_XS, "STEP", V_BLUE_MID);
+    int_text(bt.cur + 1, t);
+    cv_text(x + 4, 6, &FONT_XS, t, V_PINK);
+    x = cv_text(8, 21, &FONT_XS, "PRESET", V_WHITE);
+    x = cv_text(x + 4, 21, &FONT_XS, "BEAT", V_BLUE_MID);
+    x = cv_text(x + 10, 21, &FONT_XS, "FX+PAD", V_WHITE);
+    x = cv_text(x + 4, 21, &FONT_XS, "ACCENT", V_BLUE_MID);
+    x = cv_text(x + 10, 21, &FONT_XS, "SEQ", V_WHITE);
+    cv_text(x + 4, 21, &FONT_XS, "LEAVE", V_BLUE_MID);
+    cv_blit(0, BT_GRID_Y + 60);
+}
+
+/* ------------------------------------------------------------- the Bestiary's page --- */
+/* the creature (LFO; ALGORITHM picks it): the call PRESET picks, the pitch, its airway side on (the breath lighting it:
+ * the seal's throat and mouth as open as MOUTH; the songbird's two bronchi, each valve lit as that voice opens, its
+ * trachea, throat cavity and beak as open as GAPE), the call playing, the page's settings in the knobs' colours */
+static uint16_t air_col(float breath)        /* the breath's light: dark blue to the vector blue */
+{
+    const int lit = (int)(fm_clampf(breath / 12.0f, 0, 1) * 255.0f);   /* (full at 12 cmH2O) */
+    return RGB(0x0b + lit * 0x40 / 255, 0x22 + lit * 0x94 / 255, 0x33 + lit * 0xbf / 255);
+}
+
+static void draw_airway(int32_t y0)          /* the creature's airway, side on (the top strip's coordinates) */
+{
+    const uint16_t air = air_col(seal_breath), line = V_BLUE;
+    const int32_t tx = 112, ty = 18 - y0, h = 14;
+    if (cre.which == 0) {                    /* the seal: lungs, glottis, throat 11 cm, mouth 12 cm */
+        const int32_t w1 = 50, w2 = 54, open = 2 + (int32_t)(cre.set[0][CH_SEAL_MOUTH] * 12.0f);
+        cv_rect(tx - 14, ty + 2, 12, h - 4, RGB(0x13, 0x39, 0x54));
+        cv_rect(tx - 2, ty, 2, h, V_PINK);
+        cv_rect(tx, ty, w1, 1, line);
+        cv_rect(tx, ty + h - 1, w1, 1, line);
+        cv_rect(tx, ty + 1, w1, h - 2, air);
+        cv_rect(tx + w1, ty, w2, 1, line);
+        cv_rect(tx + w1, ty + h - 1, w2, 1, line);
+        cv_rect(tx + w1, ty + 1, w2 * 4 / 5, h - 2, air);
+        cv_rect(tx + w1 + w2 * 4 / 5, ty + (h - open) / 2, w2 / 5, open, air);
+        cv_text(tx, ty + h + 6, &FONT_XS, "THROAT", V_BLUE_DIM);
+        cv_text(tx + w1, ty + h + 6, &FONT_XS, "MOUTH", V_BLUE_DIM);
+    } else {                                 /* the songbird: two bronchi, their valves, trachea, cavity, beak */
+        const int bl = bird_audio ? (int)(bird.l.opening * 255.0f) : 0, br = bird_audio ? (int)(bird.r.opening * 255.0f) : 0;
+        const int32_t gape = 1 + (int32_t)(cre.set[1][CH_BIRD_GAPE] * 9.0f);
+        cv_rect(tx - 14, ty - 2, 16, 4, air);                            /* the bronchi */
+        cv_rect(tx - 14, ty + h - 2, 16, 4, air);
+        cv_rect(tx + 2, ty - 3, 3, 6, RGB(0x33 + bl * 0xcc / 255, 0x10 + bl * 0x63 / 255, 0x30 + bl * 0x9f / 255));   /* the valves */
+        cv_rect(tx + 2, ty + h - 3, 3, 6, RGB(0x33 + br * 0xcc / 255, 0x10 + br * 0x63 / 255, 0x30 + br * 0x9f / 255));
+        cv_rect(tx + 5, ty, 3, h, air);
+        cv_rect(tx + 8, ty + 4, 40, h - 8, air);                         /* the trachea */
+        cv_rect(tx + 8, ty + 3, 40, 1, line);
+        cv_rect(tx + 8, ty + h - 4, 40, 1, line);
+        cv_rect(tx + 48, ty - 4, 22, h + 8, air);                        /* the throat cavity */
+        cv_rect(tx + 48, ty - 5, 22, 1, line);
+        cv_rect(tx + 48, ty + h + 4, 22, 1, line);
+        cv_rect(tx + 70, ty + h / 2 - 1 - gape / 2, 34, 2 + gape, air);  /* the beak, as open as GAPE */
+        cv_rect(tx + 70, ty + h / 2 - 2 - gape / 2, 34, 1, V_GREEN);
+        cv_rect(tx + 70, ty + h / 2 + 1 + gape - gape / 2, 34, 1, V_GREEN);
+        cv_text(tx + 8, ty + h + 8, &FONT_XS, "SYRINX", V_BLUE_DIM);
+        cv_text(tx + 74, ty + h + 8, &FONT_XS, "BEAK", V_BLUE_DIM);
+    }
+}
+
+static void draw_seal(void)
+{
+    static const uint16_t col[4] = {V_GREEN, V_RED, V_PINK, V_WHITE};
+    const ch_cdef_t *d = CRE;
+    char t[32];
+    int32_t x, i;
+    const int pick = cre.call[cre.which];
+    const int playing = seal_playing >= 0 && (cvoice.call >= 0 || plat_ms() - seal_played_at < 300u);   /* (its call sounding) */
+    float hz = n_skeys ? ch_ckey_hz(&d->p[0], (float)skeys[n_skeys - 1]) : cre.set[cre.which][0];
+    if (cre_audio == cre.which && (cvoice.call >= 0 || cvoice.gate > 0.05f))   /* sounding: its pitch as it is */
+        hz = cvoice.value[0];
+    /* the header */
+    cv_begin(240, HOME_TOP, C_BLACK);
+    if (plat_ms() < ui.msg_until) {
+        x = cv_text(8, 4, &FONT_B, ui.msg[0], V_WHITE);
+        cv_text(x + 8, 4, &FONT_B, ui.msg[1], V_BLUE);
+    } else {
+        t[0] = 0;
+        text_cat(t, CRE_PAGE_NAME[cre.which][seal_page]);
+        text_cat(t, seal_page ? " 2/2" : " 1/2");
+        x = cv_text(8, 7, &FONT_XS, t, V_BLUE);
+        x = cv_text(x + 10, 7, &FONT_XS, d->name, V_WHITE);
+        t[0] = 0;
+        text_cat(t, "CALL ");
+        text_cat(t, d->calls[pick].name);
+        cv_text(232 - text_w(&FONT_XS, t), 7, &FONT_XS, t, V_BLUE_MID);
+    }
+    cv_rect(8, HOME_TOP - 1, 224, 1, RGB(0x13, 0x39, 0x54));
+    cv_blit(0, 0);
+    /* the pitch, the airway, the call */
+    for (i = 0; i < 2; i++) {
+        const int32_t y0 = HOME_TOP + i * 76;
+        cv_begin(240, 76, C_BLACK);
+        if (i == 0) {
+            int_text((int32_t)(hz + 0.5f), t);
+            x = cv_text(8, 6, &FONT_L, t, n_skeys || cvoice.call >= 0 ? V_WHITE : V_BLUE);
+            cv_text(x + 6, 20, &FONT_XS, "HZ", V_BLUE_MID);
+            cv_text(8, 46, &FONT_XS, n_skeys ? "KEYS: PITCH" : "PLAY A KEY", V_BLUE_DIM);
+            draw_airway(0);
+        } else {
+            const int c = playing ? seal_playing : pick;
+            cv_rect(8, 0, 224, 1, RGB(0x13, 0x39, 0x54));
+            cv_text(8, 8, &FONT_XS, playing ? "CALLING" : "PLAY: CALL  FX+KEY: AT ITS PITCH  LFO: HUMAN", playing ? V_GREEN : V_BLUE_DIM);
+            cv_text(8, 24, &FONT_M, d->calls[c].name, playing ? V_WHITE : V_BLUE);
+            cv_text(8, 54, &FONT_XS, d->calls[c].hint, V_BLUE_MID);
+        }
+        cv_blit(0, (uint32_t)y0);
+    }
+    /* the settings: the page's four, in the knobs' colours */
+    cv_begin(240, 240 - HOME_TOP - 152, C_BLACK);
+    cv_rect(8, 0, 224, 1, RGB(0x13, 0x39, 0x54));
+    for (i = 0; i < 4; i++) {
+        const int id = CRE_PAGE[cre.which][seal_page][i];
+        const int32_t cx = 8 + i * 58;
+        if (id < 0)
+            continue;
+        cv_rect(cx, 13, 4, 4, col[i]);
+        cv_text(cx + 8, 9, &FONT_XS, d->p[id].name, col[i]);
+        seal_text(id, t);
+        cv_text(cx, 28, &FONT_M, t, col[i]);
+    }
+    cv_blit(0, (uint32_t)(HOME_TOP + 152));
+}
+
 static void draw(void)
 {
     if (ed.on)
         draw_edit();
+    else if (bt.on)
+        draw_beat();
+    else if (body_cur == BODY_SEAL && !page_debug)
+        draw_seal();
     else if (page_debug)
         draw_debug();
     else
@@ -2466,6 +3419,22 @@ void app_frame(void)
         ui.redraw = 1;
     if (!page_debug && !ed.on && home_head_update())   /* the voice moved: the head again */
         ui.redraw = 1;
+    if (body_cur == BODY_SEAL && !ed.on && !bt.on) {   /* the seal: its breath pulsing, ~20 times a second */
+        static uint32_t seal_at;
+        if (now - seal_at >= 50u && (seal_breath > 0.05f || cvoice.call >= 0 || plat_ms() - seal_played_at < 400u)) {
+            seal_at = now;
+            ui.redraw = 1;
+        }
+    }
+    if (bt.on) {                             /* the beatbox: the playhead moved, or a sound was heard (or faded) */
+        static int8_t was_step = -2, was_sound = -2;
+        const int8_t shown = beat_sound >= 0 && beat_blocks - beat_sound_at < 60u ? beat_sound : -1;
+        if (beat_now != was_step || shown != was_sound) {
+            was_step = beat_now;
+            was_sound = shown;
+            ui.redraw = 1;
+        }
+    }
     {
         static uint8_t was_speaking;
         if (speaking != was_speaking) {
@@ -2530,6 +3499,54 @@ int app_expect(const char *what, int *got)
         *got = page;
     else if (!strncmp(what, "slotlen", 7))  /* slotlenN: slot N's length (0-based; 0: empty) */
         *got = slot_text[atoi(what + 7) % WORDS_SLOTS] ? slot_len[atoi(what + 7) % WORDS_SLOTS] : 0;
+    else if (!strcmp(what, "beat"))          /* the beatbox: open, playing (the audio's), its step, slot, cursor, tempo */
+        *got = bt.on;
+    else if (!strcmp(what, "beatplay"))
+        *got = seq.playing;
+    else if (!strcmp(what, "beatstep"))
+        *got = beat_now;
+    else if (!strcmp(what, "beatslot"))
+        *got = bt.slot;
+    else if (!strcmp(what, "beatcur"))
+        *got = bt.cur;
+    else if (!strcmp(what, "beatbpm"))
+        *got = beats.b[bt.slot].bpm;
+    else if (!strcmp(what, "beatswing"))
+        *got = beats.b[bt.slot].swing;
+    else if (!strcmp(what, "beatedit"))
+        *got = bt.edit;
+    else if (!strcmp(what, "beatdirty"))
+        *got = bt.dirty;
+    else if (!strncmp(what, "beats", 5))    /* beatsN: step N's sound in the beat shown (-1 a rest) */
+        *got = beats.b[bt.slot].s[atoi(what + 5) % BEAT_STEPS].id;
+    else if (!strcmp(what, "sealaudio"))     /* the seal: the audio renders it, its call playing (-1 none), its pitch (Hz),
+                                              * its gate (%), its page, its call picked, its breath setting (x10) */
+        *got = seal_audio;
+    else if (!strcmp(what, "sealcall"))
+        *got = cvoice.call;
+    else if (!strcmp(what, "sealhz"))
+        *got = (int)(cvoice.value[0] + 0.5f);
+    else if (!strcmp(what, "sealgate"))
+        *got = (int)(cvoice.gate * 100.0f + 0.5f);
+    else if (!strcmp(what, "sealpage"))
+        *got = seal_page;
+    else if (!strcmp(what, "sealpick"))
+        *got = cre.call[cre.which];
+    else if (!strcmp(what, "sealrate"))
+        *got = (int)(cre.set[0][CH_SEAL_PULSE_RATE] * 10.0f + 0.5f);
+    else if (!strcmp(what, "creature"))      /* the Bestiary's creature (0 the seal, 1 the songbird), the audio's, the
+                                              * songbird's interval (st x10) */
+        *got = cre.which;
+    else if (!strcmp(what, "creaudio"))
+        *got = bird_audio ? 1 : seal_audio ? 0 : -1;
+    else if (!strcmp(what, "birdint"))
+        *got = (int)(cre.set[1][CH_BIRD_INTERVAL] * 10.0f + (cre.set[1][CH_BIRD_INTERVAL] >= 0 ? 0.5f : -0.5f));
+    else if (!strcmp(what, "beatage"))       /* audio blocks since that sound */
+        *got = (int)(beat_blocks - beat_sound_at);
+    else if (!strcmp(what, "beatname"))     /* the sound the beat page names now (-1: READY) */
+        *got = beat_sound >= 0 && beat_blocks - beat_sound_at < 60u ? beat_sound : -1;
+    else if (!strcmp(what, "heard"))         /* the sound heard last (-1: none yet) */
+        *got = beat_sound;
     else if (!strncmp(what, "turns", 5))    /* turnsN: encoder N's count (plat.h EN_*) */
         *got = ui.turns[atoi(what + 5) % NE];
     else

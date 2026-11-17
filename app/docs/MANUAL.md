@@ -6,7 +6,8 @@ airway (lungs, vocal folds, throat, mouth and nose), not samples.
 
 FM-1 Chimera Vocal sings words: each key sings the next syllable of a line, at the key's pitch, through CHIMERA's own
 text-to-speech front end. In VOWEL mode the keys play pitch and the knobs move the mouth through the vowels. The screen
-is CHIMERA's flat view, live: the head moving as it sings.
+is CHIMERA's flat view, live: the head moving as it sings. From 0.7.0 the same mouth beatboxes (SEQ), and LFO swaps
+it for a seal's or a songbird's (CHIMERA's Bestiary).
 
 ![The boot screen: FM-1 Chimera Vocal, the version, the credits](img/boot.png "The boot screen")
 ![The home screen in WORDS: the head singing, NOW LO, NEXT THERE, page 1's knobs at the bottom](img/home-words.png "WORDS: singing the lo of Hello, there next; page 1's knobs below")
@@ -19,6 +20,8 @@ is CHIMERA's flat view, live: the head moving as it sings.
   syllable it starts again.
 - **VOWEL** (FX): the keys play pitch only, the voice holding the vowel the knobs set; the last key held sounds, the
   pitch gliding (Glide) between keys.
+- **In the beatbox** (SEQ) the keys are drum pads, the black keys a hummed bass ([below](#beatbox)); **in the
+  Bestiary** (LFO) they play the creature's pitch ([below](#bestiary)). From 0.7.0.
 - **Pressing harder** on a held key deepens its vibrato (up to 50 cents more), like a singer leaning into a long note.
   From 0.6.0.
 - MIDI in plays as the keys do, and lights the keys its notes fall on ([below](#playing-from-a-midi-controller)).
@@ -38,6 +41,9 @@ it also shapes the voice:
 | Mod wheel (CC1) | Adds breath: from the Breathy knob's setting (wheel down) up to fully breathy (wheel up) |
 | Pitch bend | Bends the pitch up to ±2 semitones |
 
+In the beatbox (SEQ) MIDI notes play the pads of the keys they fall on; in the Bestiary (LFO) they play the creature's
+pitch, and pitch bend bends it.
+
 The FM-1 itself has no mod wheel or pitch bend: these come from the controller. Every MIDI channel is listened to.
 (Bluetooth MIDI, and a USB keyboard plugged straight into the FM-1, aren't built into this firmware.)
 
@@ -51,12 +57,15 @@ The FM-1 itself has no mod wheel or pitch bend: these come from the controller. 
 | EDIT | Opens the word editor on the slot being sung: type words on the keys ([below](#typing-words)). (From 0.5.0; before, EDIT stepped the pages.) |
 | PLAY | Speaks the word slot's words (in WORDS mode). Pressing a key while it speaks starts singing instead. |
 | SAVE | Keeps the knobs in the voice preset, the vowel snapshots and the settings, through power-off. Its light is on while something is unsaved. |
+| SEQ | The beatbox and back: the keys become CHIMERA's drum sounds, with a step sequencer ([below](#beatbox)). From 0.7.0. |
+| LFO | The Bestiary (the seal or the songbird) and back to the human voice ([below](#bestiary)). Its light is on in the Bestiary. From 0.7.0. |
 | GLO | The debug page (the cores' timings) and back. |
 
 ## The knobs
 
 **K1-K4** are the page's four values, shown at the bottom of the screen in their colours (K1 green, K2 red, K3 pink,
-K4 white). **SELECT** turns the page. The ranges are CHIMERA's own.
+K4 white). **SELECT** turns the page. The ranges are CHIMERA's own. (In the beatbox they are its tempo, swing and step
+cursor, in the Bestiary the creature's settings: see their sections.)
 
 | Page | K1 | K2 | K3 | K4 |
 | --- | --- | --- | --- | --- |
@@ -77,7 +86,7 @@ and dark, high is forward and edgy. The presets use it as part of their characte
 
 ## Body
 
-**ALGORITHM** chooses the voice's body, on every page: **MALE**, **FEMALE** or **CHILD**, CHIMERA's three bodies. The
+**ALGORITHM** chooses the voice's body, on every page but the Bestiary's (there it chooses the creature): **MALE**, **FEMALE** or **CHILD**, CHIMERA's three bodies. The
 body is the whole airway, its size, its throat's length, its tongue and lips, with each body's own calibrated vowels
 and consonants, so a female or child voice is a different instrument, not a pitch shift. The screen names the body as
 you turn, and it changes when the knob rests (the voice switches to the new body's anatomy, with a quick fade). The head on the
@@ -109,6 +118,99 @@ made there instead. SAVE keeps them.
   ROUGH, FRY, TWANG (this port's own: CHIMERA has none). SAVE stores the knobs as they are into the preset chosen.
 - **HOME + PRESET** (turn PRESET with HOME held) chooses the word slot the keys sing, 1-8, as the Studio sent them
   or as you typed them. The screen shows the slot and how it starts.
+- In the beatbox PRESET chooses the beat, in the Bestiary the creature's call (from 0.7.0).
+
+## Beatbox
+
+**SEQ** turns the FM-1 into CHIMERA's beatboxer (from 0.7.0). Every drum is the same simulated mouth making a real
+beatboxer's sound, the way beatboxers make it, so the head on the screen shows each one being made:
+
+| Pad | Sound | How the mouth makes it |
+| --- | --- | --- |
+| 1st white key | Kick (`B`) | The lips shut, the glottis seals and the larynx rises like a piston, then the lips burst (an ejective) |
+| 2nd | Snare (`Pf`) | The lips burst, then the lower lip hisses against the teeth |
+| 3rd | Hi-hat (`t`) | The tongue tip releases into a short hiss |
+| 4th | Open hat (`tss`) | The hi-hat left ringing as a long hiss |
+| 5th | Rimshot (`K`) | The back of the tongue bursts on air the rising larynx compresses |
+| 6th | Inward snare (`^K`) | A sharp breath in past the back of the tongue |
+| 7th | Tongue click (`!`) | The tongue seals a pocket against the palate, hollows it and pops |
+| 8th | Lip pop (`P!`) | The lips sealed, the jaw drops, the lips pop open |
+| 9th | Crash (`kch`) | The back of the tongue releases into a long rounded hiss |
+| Black keys | Hum (`m`) | A hummed bass through the nose, an octave below the key |
+
+The next seven white keys repeat the first seven. A pad sounds as soon as the mouth can make it, about a tenth of a
+second after the press: the mouth has to get ready (a click's pocket takes longest).
+
+- **PLAY** starts and stops the beat. **PRESET** chooses one of eight beats: CHIMERA's seven (BOOTS AND CATS, FOUR ON
+  THE FLOOR, BREAKBEAT, RIMSHOT SHUFFLE, INWARD SNARE, CLICKS AND POPS, HUM BASS) and MY BEAT, empty to start.
+- **K1** is the tempo (40-200 BPM) and **K2** the swing (the off-beats late, up to 60 %).
+- **ALGORITHM** still chooses the body: a child can beatbox too.
+- **EDIT** writes steps (STEP EDIT): the cursor is outlined on the grid, **K3** moves it, and a pad writes its sound
+  into the step and moves on (hold **FX** for an accented, louder step, marked with a dot). **OCT−** clears the step
+  and goes back, **OCT+** clears it and goes on. Edits are heard at once if the beat is playing. EDIT again: the pads
+  only play.
+- **SAVE** keeps every beat, its tempo and its swing through power-off. **SEQ** or **HOME** leaves.
+
+The grid shows the beat's sixteen steps in two rows, each sound's symbol in its colour (kicks green, snares red, hats
+pink, clicks and pops white, the hum blue), the step playing lit.
+
+![The beatbox playing BOOTS AND CATS: the hi-hat heard, the grid with the playhead](img/beat.png "SEQ: BOOTS AND CATS playing")
+![STEP EDIT on MY BEAT: a kick, a snare and a rimshot written, the cursor on step 5](img/beat-edit.png "STEP EDIT: the cursor outlined")
+
+The beatbox plays through CHIMERA's close-mic sound (a microphone's bass boost up close, a little presence, a fast
+compressor), as CHIMERA's does.
+
+## Bestiary
+
+**LFO** swaps the human voice for an animal's from CHIMERA's Bestiary (from 0.7.0), and **LFO** again goes back to
+the human body ALGORITHM holds. On the Bestiary page **ALGORITHM** chooses the creature: the **seal** or the
+**songbird**. Each one is simulated the way the human voice is, from its own airway and its own sound source.
+
+On either creature:
+
+- **The keys** play its pitch: it breathes while a key is held, the last key held sounding. The keys are shifted by
+  whole octaves to sit in the creature's range (CHIMERA's mapping, centred on middle C), so they sound above their
+  names: one octave for the seal, three for the songbird.
+- **PRESET** chooses one of its calls. **PLAY** plays it; **FX + a key** plays it at the key's pitch.
+- **K1-K4** are its settings, on two pages (**SEL**).
+- **SAVE** keeps each creature's settings and call. The beatbox needs a human body: LFO back first.
+
+The screen draws the creature's airway side on, the breath lighting it as it flows.
+
+### The seal
+
+The **Weddell seal**, whose calls glide down over seconds while their pulses slow (researchers compare them to
+analogue synths). Its larynx, throat and mouth, its breath pulsing. Its range is 40 Hz to 6 kHz.
+
+| Page | K1 | K2 | K3 | K4 |
+| --- | --- | --- | --- | --- |
+| 1 PULSE | Rate (the pulses, Hz) | Depth (how much they pulse) | Duty (how long each pulse lasts) | Bright (the larynx's closure) |
+| 2 VOICE | Rough (chaotic vibration) | Breath (the lungs' pressure, cmH₂O) | Mouth (its opening) | |
+
+Its calls: TRILL (falling for 3.6 s, its pulses slowing), ZAP (a laser chirp), WHISTLE (dips and returns), CHUG (a
+low pulsed grunt).
+
+![The seal: 523 Hz held, its throat and mouth lit by the breath, the call TRILL chosen, page 1's settings](img/seal.png "LFO: the seal, a key held")
+
+### The songbird
+
+A thrush-sized **songbird** with two voices: its syrinx has two pairs of labia, one in each bronchus, each with its own
+pitch. Both feed the trachea, then a throat cavity that can follow the note (a pure, whistled tone), then the beak.
+Its range is 400 Hz to 9 kHz. The diagram lights each voice's valve as it opens.
+
+| Page | K1 | K2 | K3 | K4 |
+| --- | --- | --- | --- | --- |
+| 1 SYRINX | Interval (the second voice, semitones from the first) | Voices (left alone ← both → right alone) | Drive (pure ↔ raspy) | Tension (the labia's) |
+| 2 THROAT | Breath (the air sacs' pressure, kPa) | Purity (how far the throat follows the note) | Throat (the cavity's size when it doesn't, cm³) | Gape (the beak's opening) |
+
+Its calls: FLUTE (three notes, then a two-voice shimmer, a wood thrush's), TRILL (a canary's, 16 upsweeps a second),
+CHIRPS (falling, faster and faster), BUZZ (a zebra finch's, raspy, pulsed by mini-breaths).
+
+![The songbird: 2093 Hz held, its two bronchi and valves, trachea, throat cavity and beak, the call FLUTE chosen, page 1's settings](img/bird.png "LFO, then ALGORITHM: the songbird")
+
+(CHIMERA simulates the songbird four times faster than the FM-1's sound runs. On the FM-1 it is a lighter airway at
+twice the rate, with the syrinx's cycles precomputed from CHIMERA's own equations; its level and harmonics are within
+a few dB of CHIMERA's.)
 
 ## Typing words
 
@@ -154,11 +256,14 @@ moving as it sings: the tongue green, the jaw red, the lips pink, the soft palat
 syllable sounding (a hyphen when its word goes on; SPEAKING while PLAY speaks), NEXT, the one the next key sings, and
 the word slot; in VOWEL: the vowel made and its formants. At the bottom: the page's four knobs.
 
+**SEQ** shows the beatbox's page instead (the head as it beatboxes, the sound heard, the sixteen steps), **LFO** the
+Bestiary's (the creature's pitch, its airway, its call): see their sections.
+
 **GLO** switches to the debug page and back: how long each core takes.
 
 | Line | What it means |
 | --- | --- |
-| CORE 2 TRACT | The second core's share of each audio block (5.8 ms): the sound waves through the throat, mouth and nose, and the vocal folds, every sample. The average over the last half second, then the worst block. |
+| CORE 2 TRACT | The second core's share of each audio block (5.8 ms): the sound waves through the throat, mouth and nose, and the vocal folds, every sample. The average over the last half second, then the worst block. With the songbird all of it runs here (about 44 % at its worst), and CORE 1 shows 0. |
 | CORE 1 CONTROL | The first core's share: moving the articulators along the gestures, then turning the tongue, jaw and lip positions into the shape of the tract. |
 | AUDIO LOAD | The whole audio interrupt's share of its time. |
 | XRUNS | Blocks that were late since power-on: each is a click. It should stay at 0. |
