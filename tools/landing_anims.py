@@ -82,6 +82,16 @@ def bird():
     return interleave([(0, "tap LFO"), (100, "spin ALGO 1"), (900, "key 7 down"), (1800, "key 7 up"), (2000, "tap PLAY")], "bird", 3.6)
 
 
+def gator():
+    """LFO then ALGORITHM two on: the alligator, PLAY: its bellow rising into chaos"""
+    return interleave([(0, "tap LFO"), (100, "spin ALGO 2"), (700, "tap PLAY")], "gator", 3.0)
+
+
+def elephant():
+    """LFO then ALGORITHM three on: the elephant, PRESET: the trumpet, PLAY: the lips buzzing into the trunk"""
+    return interleave([(0, "tap LFO"), (100, "spin ALGO 3"), (600, "spin PRESET 1"), (1400, "tap PLAY")], "elephant", 3.0)
+
+
 def sing():
     """ENV: slot 1 sung on CHIMERA's Dreamy, the head singing, the melody moving"""
     return interleave([(0, "tap ENV"), (300, "tap PLAY")], "sing", 4.2)
@@ -104,7 +114,7 @@ def main():
     for f in WORK.glob("*.png"):
         f.unlink()
     OUT.mkdir(parents=True, exist_ok=True)
-    for name, lines in (("words", words()), ("vowel", vowel()), ("speak", speak()), ("beat", beat()), ("seal", seal()), ("bird", bird()), ("sing", sing())):
+    for name, lines in (("words", words()), ("vowel", vowel()), ("speak", speak()), ("beat", beat()), ("seal", seal()), ("bird", bird()), ("gator", gator()), ("elephant", elephant()), ("sing", sing())):
         script = WORK / f"{name}.txt"
         # (a fresh boot each: the voice at rest, slot 1, page 1)
         script.write_text("\n".join(["wait 400"] + lines) + "\n")

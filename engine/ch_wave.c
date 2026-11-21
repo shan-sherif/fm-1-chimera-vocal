@@ -122,6 +122,93 @@ void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real k, ch_real t
     w->lim_hold = 0;
     w->lim_hold_n = (int32_t)js_round_c(R(0.025) * fs);
     w->lim_release = EXP(R(-1.0) / (R(0.2) * fs));
+    w->valve_m = 0;
+    w->vlv_len = R(0.6);                      /* the elephant's: PortSpec::new(0, 0.6).kinetic(0.3, 1), wide open 4.5 cm2 */
+    w->vlv_kin = R(0.3);
+    w->vlv_kex = R(1.0);
+    w->vlv_rest = R(4.5);
+    w->vlv_h = w->vlv_v = w->vlv_open = w->vlv_u = w->vlv_mom = w->vlv_l = w->vlv_dp = 0;
+    w->vlv.mode = 0;
+    w->vlv.f = R(400.0);                      /* LipReed::new */
+    w->vlv.zeta = R(0.12);
+    w->vlv.h0 = R(-0.01);
+    w->vlv.width = R(1.2);
+    w->vlv.surface_per_mass = R(0.08);
+}
+
+int ch_wave_nose(ch_wave_t *w, int add, ch_real len, ch_real a0, ch_real a1)
+{
+    const int first = add ? w->nn : 1;
+    int n = (int)js_round_c(len / w->dx), i;
+    n = n < 1 ? 1 : n;
+    if (first + n > CH_WNMAX)
+        n = CH_WNMAX - first;
+    for (i = 0; i < n; i++)
+        w->nsec[first + i].area = a0 + (a1 - a0) * ((ch_real)i + R(0.5)) / (ch_real)n;   /* (at its middle, as fill_areas) */
+    w->nn = first + n;
+    for (i = 1; i < w->nn; i++)
+        w->nsec[i].k = refl(w->nsec[i - 1].area, w->nsec[i].area);
+    return first;
+}
+
+CH_HOT void ch_wave_valve(ch_wave_t *w, const ch_wvalve_t *v)   /* (in RAM: the second core's job calls it) */
+{
+    w->vlv.mode = v->mode;
+    w->vlv.f = v->f;
+    w->vlv.zeta = v->zeta;
+    w->vlv.h0 = v->h0;
+    w->vlv.width = v->width;
+    w->vlv.surface_per_mass = v->surface_per_mass;
+}
+
+/* the valve's junction for one sample (before nose section valve_m): the lips moved by last sample's pressure across
+ * them (LipReed::next, semi-implicit Euler, the lips' collisions), the opening it gives (no less than the rest
+ * opening while the mode is part way), the flow through it solved with the port's kinetic loss and inertance against
+ * the two sections' impedances (as the glottis's: energy-safe as the inertance changes) */
+CH_HOT static void valve(ch_wave_t *w, int p, int q)
+{
+    ch_wnsec_t *const a = &w->nsec[w->valve_m - 1], *const b = &w->nsec[w->valve_m];
+    const ch_real in1 = a->R[p], in2 = b->L[p], z1 = w->rho_c / mx(a->area, R(1e-4)), z2 = w->rho_c / mx(b->area, R(1e-4));
+    const ch_real mode = w->vlv.mode;
+    ch_real area, u = 0;
+    if (mode > R(0.02)) {
+        const ch_real om = R(2.0) * CH_PI * w->vlv.f, dt = R(1.0) / w->fs;
+        const ch_real acc = w->vlv.surface_per_mass * w->vlv_dp * mode - R(2.0) * w->vlv.zeta * om * w->vlv_v
+                            - om * om * (w->vlv_h - w->vlv.h0);
+        w->vlv_v += acc * dt;
+        w->vlv_h += w->vlv_v * dt;
+        if (w->vlv_h < R(-0.05)) {
+            w->vlv_h = R(-0.05);
+            if (w->vlv_v < 0)
+                w->vlv_v = 0;
+        }
+        if (w->vlv_h > R(0.8)) {
+            w->vlv_h = R(0.8);
+            if (w->vlv_v > 0)
+                w->vlv_v = 0;
+        }
+        w->vlv_open = w->vlv_h > 0 ? w->vlv_h * w->vlv.width : 0;
+        area = mx(w->vlv_open, w->vlv_rest * (R(1.0) - mode));
+    } else {
+        area = w->vlv_rest;
+    }
+    if (area > w->closed_area) {
+        const ch_real half_rho = R(0.5) * RHO, ip = R(1.0) / area, l = RHO * w->vlv_len * ip;
+        const ch_real kin = w->vlv_kin * half_rho * ip * ip, ex_f = ip - R(1.0) / b->area, ex_b = ip - R(1.0) / a->area;
+        const ch_real m0 = l < w->vlv_l ? l * w->vlv_u : w->vlv_mom;
+        const ch_real c = R(2.0) * (in1 - in2) + m0 * w->fs, bq = z1 + z2 + l * w->fs;
+        const ch_real kk = c >= 0 ? kin + w->vlv_kex * half_rho * (ex_f > 0 ? ex_f * ex_f : 0)
+                                  : kin + w->vlv_kex * half_rho * (ex_b > 0 ? ex_b * ex_b : 0);
+        u = (c / bq) * R(2.0) / (R(1.0) + SQRT(R(1.0) + R(4.0) * kk * FABS(c) / (bq * bq)));
+        w->vlv_mom = l * u;
+        w->vlv_l = l;
+    } else {
+        w->vlv_mom = w->vlv_l = 0;
+    }
+    w->vlv_u = u;
+    b->R[q] = (in2 + z2 * u) * w->fade_n;
+    a->L[q] = (in1 - z1 * u) * w->fade_n;
+    w->vlv_dp = (R(2.0) * in1 - z1 * u) - (R(2.0) * in2 + z2 * u);   /* (the pressures each side, for the next sample) */
 }
 
 /* a jet's kinetic loss coefficients between areas a and b, each way (CHIMERA's: the expansion leaving the narrower
@@ -712,11 +799,21 @@ CH_HOT void ch_wave_render(ch_wave_t *w, float *out, uint32_t n)
         }
         sec[nt - 1].L[q] = y * fade;
         rad = (in - y) * sec[nt - 1].area;
-        /* the nose's junctions and the nostrils */
-        for (m = 1; m < nn; m++) {
-            ch_real in1 = ns[m - 1].R[p], in2 = ns[m].L[p], d = ns[m].k * (in1 - in2);
-            ns[m].R[q] = (in1 + d) * fade_n;
-            ns[m - 1].L[q] = (in2 + d) * fade_n;
+        /* the nose's junctions (a valve's in its place) and the nostrils */
+        {
+            const int vm = w->valve_m > 0 && w->valve_m < nn ? w->valve_m : nn;
+            for (m = 1; m < nn; m++) {
+                ch_real in1, in2, d;
+                if (m == vm) {
+                    valve(w, p, q);
+                    continue;
+                }
+                in1 = ns[m - 1].R[p];
+                in2 = ns[m].L[p];
+                d = ns[m].k * (in1 - in2);
+                ns[m].R[q] = (in1 + d) * fade_n;
+                ns[m - 1].L[q] = (in2 + d) * fade_n;
+            }
         }
         in = ns[nn - 1].R[p];
         if (w->rad_load) {

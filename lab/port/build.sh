@@ -31,7 +31,12 @@ cc -O2 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -o ../out/seal_test seal_tes
     $E/ch_fast.c $E/ch_tract.c -lm
 # the songbird (bird_test OUT.wav: a note, then its calls) against `chimera render creature songbird OUT`; its syrinx
 # tables: ../tools/gen_syrinx_waves.py (CHIMERA's syrinxTable.generated.json) > ../../engine/ch_syrinx_waves.h
-cc -O2 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -o ../out/bird_test bird_test.c $E/ch_creature.c -lm
+cc -O2 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -o ../out/bird_test bird_test.c $E/ch_creature.c $E/ch_wave.c $E/ch_voice.c \
+    $E/ch_fast.c $E/ch_tract.c -lm
+# the alligator and the elephant (cre_test alligator|elephant OUT.wav: a note, then its calls, at their fraction of the
+# rate and interpolated up) against `chimera render creature alligator|elephant OUT`
+cc -O2 $W -DCH_FM1 -DPLAT_HOST -I../../base/include -o ../out/cre_test cre_test.c $E/ch_creature.c $E/ch_wave.c $E/ch_voice.c \
+    $E/ch_fast.c $E/ch_tract.c -lm
 # the anatomy's stages timed over a moving articulation (-DCH_COUNT: its segment tests counted too)
 cc -O2 $W -DCH_FM1 -DPLAT_HOST -DCH_COUNT -DCH_PROF=prof_mark -I../../base/include -I../../app/dsp -include tract_prof.h \
     -o ../out/tract_prof tract_prof.c $E/ch_tract.c $E/ch_control.c $E/ch_voice.c -lm

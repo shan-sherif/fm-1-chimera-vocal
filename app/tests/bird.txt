@@ -1,7 +1,7 @@
 # The Bestiary's songbird (0.7.0): LFO opens the Bestiary, ALGORITHM picks the songbird (its airway on the second core
 # at 2x); a key held plays its two voices (C4 three octaves up: CHIMERA's creatureKeyHz centres its 400..9000 Hz on
 # middle C), PLAY its flute phrase, PRESET the canary trill with FX at a key; SEL its throat page; kept through a
-# reboot; ALGORITHM back to the seal; LFO back to the human voice.
+# reboot; ALGORITHM back down to the seal; LFO back to the human voice.
 #   python base/tools/build.py app --host; app/build/host/chimera_host app/tests/bird.txt app/build/host
 wait 400
 listen
@@ -67,8 +67,8 @@ expect creature 1
 expect creaudio 1
 expect birdint 94
 expect sealpick 1
-# ALGORITHM: the seal again; LFO: the human voice
-spin ALGO 1
+# ALGORITHM back: the seal again; LFO: the human voice
+spin ALGO -1
 said SEAL
 wait 300
 expect creature 0

@@ -101,6 +101,29 @@ spin ALGO -1
 wait 300
 tap LFO
 wait 600
+# the alligator (LFO, ALGORITHM two on): its bellow, mid-call
+tap LFO
+wait 300
+spin ALGO 2
+wait 600
+tap PLAY
+wait 1200
+shot gator.png
+wait 1500
+# the elephant (ALGORITHM on): its trumpet (PRESET), mid-call
+spin ALGO 1
+wait 600
+spin PRESET 1
+wait 1200
+tap PLAY
+wait 350
+shot elephant.png
+wait 1500
+spin PRESET -1
+spin ALGO -3
+wait 300
+tap LFO
+wait 600
 # CHIMERA's tunes (ENV): slot 1 sung on Dreamy, mid-song
 tap ENV
 wait 300

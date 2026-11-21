@@ -623,3 +623,253 @@ CH_HOT ch_real ch_bird_sample(ch_bird_t *b)
         x = (x < 0 ? R(-1.0) : R(1.0)) * (R(0.7) + R(0.3) * TANH((FABS(x) - R(0.7)) / R(0.3)));
     return x;
 }
+
+/* ------------------------------------------------- the alligator and the elephant --- */
+#define G CH_CK_GATE
+#define MAM_NPH 12                             /* their anatomy cells: the pharynx's, the mouth's (a cell 1.2-2.7 cm; */
+#define MAM_NOR 20                             /* the mouth's opening its last three, CHIMERA's last 15 %) */
+
+/* CHIMERA's mammal_noise: aspiration at the glottis (into the pharynx's second branch; 4 kHz low-pass, 250 Hz
+ * high-pass) and, with an oral gain, the mouth's narrowest point under 2 cm2 (5 kHz, 600 Hz) */
+static void mammal_noise(ch_shape_t *s, ch_real fs, ch_real glottis, ch_real oral)
+{
+    const ch_real dph = s->ph_len / (ch_real)s->n_ph, dor = s->or_len / (ch_real)s->n_or;
+    ch_noise_t *n = &s->noise[0];
+    int i, mi = 0;
+    ch_real mv = R(1e9);
+    n->src = 0;
+    n->fwd = 1;
+    n->bwd = 0;
+    n->gain = glottis;
+    n->lp_coef = R(1.0) - EXP((R(-2.0) * CH_PI * R(4000.0)) / fs);
+    n->hp_coef = EXP((R(-2.0) * CH_PI * R(250.0)) / fs);
+    n->hp = n->lp1 = n->lp2 = n->level = 0;
+    s->noise_s[0][0] = 0;
+    s->noise_s[0][1] = R(2.0) * dph;
+    s->noise_s[0][2] = -1;
+    s->n_noise = 1;
+    if (oral <= 0)
+        return;
+    for (i = 0; i < s->n_or - 1; i++)
+        if (s->or_areas[i] > 0 && s->or_areas[i] < mv) {
+            mv = s->or_areas[i];
+            mi = i;
+        }
+    if (mv >= R(2.0))
+        return;
+    n = &s->noise[1];
+    n->src = 1;
+    n->fwd = 2;
+    n->bwd = 3;
+    n->gain = oral;
+    n->lp_coef = R(1.0) - EXP((R(-2.0) * CH_PI * R(5000.0)) / fs);
+    n->hp_coef = EXP((R(-2.0) * CH_PI * R(600.0)) / fs);
+    n->hp = n->lp1 = n->lp2 = n->level = 0;
+    /* (a branch's place: the end of the cell it leaves) */
+    s->noise_s[1][0] = s->ph_len + (ch_real)(mi + 1) * dor;
+    s->noise_s[1][1] = s->ph_len + (ch_real)((mi + 1 < s->n_or - 2 ? mi + 1 : s->n_or - 2) + 1) * dor;
+    s->noise_s[1][2] = s->ph_len + (ch_real)((mi > 0 ? mi - 1 : 0) + 1) * dor;
+    s->n_noise = 2;
+}
+
+/* a uniform pharynx, a mouth of `inside` cm2 opening to `open` cm2 over its last 15 % (fill_areas, u > 0.85) */
+static void mammal_tubes(ch_shape_t *s, ch_real ph_len, ch_real ph_area, ch_real or_len, ch_real inside, ch_real open)
+{
+    int i;
+    s->n_ph = MAM_NPH;
+    s->n_or = MAM_NOR;
+    s->ph_len = ph_len;
+    s->or_len = or_len;
+    for (i = 0; i < MAM_NPH; i++)
+        s->ph_areas[i] = s->ph_min[i] = ph_area;
+    for (i = 0; i < MAM_NOR; i++)
+        s->or_areas[i] = s->or_min[i] = ((ch_real)i + R(0.5)) / (ch_real)MAM_NOR > R(0.85) ? open : inside;
+}
+
+/* the mammal's waveguide at fs / div: the glottal port (PortSpec(0, 0.4).kinetic(0.37, 1).slit(sqrt(trachea) * 0.9)),
+ * the phonation threshold (1.5 cmH2O), the walls' radiation */
+static void mammal_wave(ch_wave_t *w, ch_real fs, int ctrl, int div, ch_real tract_len, ch_real trachea_area,
+                        ch_real wall_rad, ch_real gain)
+{
+    ch_wave_init(w, fs / (ch_real)div, ctrl / div, R(1.0), tract_len);
+    w->port_len = R(0.4);
+    w->port_slit = SQRT(trachea_area) * R(0.9);
+    w->wall_rad = wall_rad;
+    w->glottis.threshold = R(1.5) * CMH2O;
+    w->output_gain = gain;
+}
+
+static const ch_cparam_t GATOR_P[CH_GATOR_NP] = {
+    {"PITCH", R(12.0), R(120.0), R(28.0), R(0.05), 1, 1, "HZ"},
+    {"CHAOS", R(0.0), R(1.0), R(0.75), R(0.05), 0, 0, ""},
+    {"BREATH", R(3.0), R(40.0), R(18.0), R(0.03), 0, 0, "CMH2O"},
+    {"MOUTH", R(0.0), R(1.0), R(0.02), R(0.05), 0, 0, ""},
+    {"NOSE", R(0.0), R(1.0), R(0.8), R(0.05), 0, 0, ""},
+    {"HISS", R(0.0), R(1.0), R(0.0), R(0.04), 0, 0, ""},
+};
+static const ch_ckey_t BELLOW[] = {
+    {R(0.0), CH_CURVE_LIN, 5, {G, CH_GATOR_CHAOS, CH_GATOR_PITCH, CH_GATOR_HISS, CH_GATOR_MOUTH}, {0, R(0.55), R(30.0), 0, R(0.02)}},
+    {R(0.15), CH_CURVE_LIN, 1, {G}, {1}},
+    {R(1.6), CH_CURVE_LIN, 3, {G, CH_GATOR_CHAOS, CH_GATOR_PITCH}, {1, R(0.95), R(24.0)}},
+    {R(2.0), CH_CURVE_LIN, 1, {G}, {0}},
+};
+static const ch_ckey_t GROWL[] = {
+    {R(0.0), CH_CURVE_LIN, 4, {G, CH_GATOR_CHAOS, CH_GATOR_PITCH, CH_GATOR_MOUTH}, {1, R(0.7), R(45.0), R(0.15)}},
+    {R(0.5), CH_CURVE_LIN, 1, {CH_GATOR_PITCH}, {R(38.0)}},
+    {R(0.6), CH_CURVE_LIN, 1, {G}, {0}},
+};
+static const ch_ckey_t GHISS[] = {
+    {R(0.0), CH_CURVE_LIN, 3, {G, CH_GATOR_HISS, CH_GATOR_MOUTH}, {0, R(1.0), R(0.9)}},
+    {R(0.1), CH_CURVE_LIN, 1, {G}, {1}},
+    {R(1.2), CH_CURVE_LIN, 1, {G}, {1}},
+    {R(1.3), CH_CURVE_LIN, 3, {G, CH_GATOR_HISS, CH_GATOR_MOUTH}, {0, 0, R(0.02)}},
+};
+static const ch_ckey_t DANCE[] = {
+    {R(0.0), CH_CURVE_LIN, 4, {G, CH_GATOR_CHAOS, CH_GATOR_PITCH, CH_GATOR_MOUTH}, {1, 0, R(18.0), 0}},
+    {R(1.6), CH_CURVE_LIN, 1, {G}, {1}},
+    {R(1.7), CH_CURVE_LIN, 2, {G, CH_GATOR_CHAOS}, {0, R(0.75)}},
+};
+static const ch_ccall_t GATOR_CALLS[] = {
+    {"BELLOW", "RISING INTO CHAOS", R(28.0), 4, BELLOW},
+    {"GROWL", "A SHORT WARNING", R(45.0), 3, GROWL},
+    {"HISS", "OPEN MOUTH, AIR", R(0.0), 4, GHISS},
+    {"DANCE", "A SUBSONIC THROB", R(18.0), 3, DANCE},
+};
+const ch_cdef_t CH_GATOR = {"ALLIGATOR", CH_GATOR_NP, 4, GATOR_P, GATOR_CALLS, R(0.012), R(0.06)};
+
+void ch_gator_wave(ch_wave_t *w, ch_real fs, int ctrl)
+{
+    mammal_wave(w, fs, ctrl, CH_GATOR_DIV, R(42.0), R(6.0), R(1.0), CH_GATOR_GAIN);
+    ch_wave_nose(w, 0, R(26.0), R(1.8), R(1.8));   /* the nasal tube: 26 cm of 1.8 cm2, the nostrils radiating */
+}
+
+void ch_gator_control(const ch_cvoice_t *v, ch_real fs, ch_glottis_params_t *g, ch_real *p_lung, ch_shape_t *shape)
+{
+    const ch_real *p = v->value, hiss = p[CH_GATOR_HISS], chaos = p[CH_GATOR_CHAOS];
+    *p_lung = p[CH_GATOR_PRESSURE] * CMH2O * v->gate;
+    *g = DEFAULT_GLOTTIS;
+    g->f0 = p[CH_GATOR_PITCH];
+    g->amplitude = R(0.9) * (R(1.0) - hiss);
+    g->abduction = R(0.02) + R(0.8) * hiss;
+    g->open_quotient = R(0.5);
+    g->closure_sharpness = R(0.8);
+    g->effort = R(1.0);
+    g->chaos = chaos;
+    g->jitter = R(0.01) + R(0.05) * chaos;
+    g->shimmer = R(0.05) + R(0.25) * chaos;
+    g->drift = R(8.0);
+    mammal_tubes(shape, R(18.0), R(7.0), R(24.0), R(6.0), R(0.05) + R(12.0) * p[CH_GATOR_MOUTH]);
+    shape->velum_port_area = R(0.4) + R(1.6) * p[CH_GATOR_NOSTRILS];
+    mammal_noise(shape, fs, R(6e-6), R(4e-6));
+}
+
+static const ch_cparam_t ELE_P[CH_ELE_NP] = {
+    {"TRUMPET", R(0.0), R(1.0), R(0.0), R(0.03), 0, 0, ""},
+    {"PITCH", R(8.0), R(45.0), R(14.0), R(0.05), 1, 1, "HZ"},
+    {"LIPS", R(150.0), R(900.0), R(470.0), R(0.02), 1, 0, "HZ"},
+    {"BREATH", R(3.0), R(45.0), R(16.0), R(0.02), 0, 0, "CMH2O"},
+    {"TRUNK", R(0.0), R(1.0), R(1.0), R(0.04), 0, 0, ""},
+    {"CHAOS", R(0.0), R(1.0), R(0.2), R(0.05), 0, 0, ""},
+};
+static const ch_ckey_t RUMBLE[] = {
+    {R(0.0), CH_CURVE_LIN, 4, {CH_ELE_MODE, G, CH_ELE_PITCH, CH_ELE_TRUNK}, {0, 0, R(15.0), R(1.0)}},
+    {R(0.3), CH_CURVE_LIN, 1, {G}, {1}},
+    {R(2.7), CH_CURVE_LIN, 2, {G, CH_ELE_PITCH}, {1, R(12.0)}},
+    {R(3.1), CH_CURVE_LIN, 1, {G}, {0}},
+};
+static const ch_ckey_t TRUMPET[] = {
+    {R(0.0), CH_CURVE_LIN, 5, {CH_ELE_MODE, G, CH_ELE_LIP_PITCH, CH_ELE_PRESSURE, CH_ELE_CHAOS}, {1, 0, R(380.0), R(26.0), R(0.1)}},
+    {R(0.05), CH_CURVE_LIN, 1, {G}, {1}},
+    {R(0.5), CH_CURVE_EXP, 1, {CH_ELE_LIP_PITCH}, {R(520.0)}},
+    {R(1.1), CH_CURVE_EXP, 3, {CH_ELE_LIP_PITCH, CH_ELE_CHAOS, CH_ELE_PRESSURE}, {R(470.0), R(0.6), R(34.0)}},
+    {R(1.25), CH_CURVE_LIN, 3, {G, CH_ELE_MODE, CH_ELE_PRESSURE}, {0, 0, R(16.0)}},
+};
+static const ch_ckey_t SQUEAK[] = {
+    {R(0.0), CH_CURVE_LIN, 4, {CH_ELE_MODE, G, CH_ELE_LIP_PITCH, CH_ELE_PRESSURE}, {1, 0, R(820.0), R(20.0)}},
+    {R(0.04), CH_CURVE_LIN, 1, {G}, {1}},
+    {R(0.45), CH_CURVE_LIN, 1, {CH_ELE_LIP_PITCH}, {R(880.0)}},
+    {R(0.5), CH_CURVE_LIN, 3, {G, CH_ELE_MODE, CH_ELE_PRESSURE}, {0, 0, R(16.0)}},
+};
+static const ch_ccall_t ELE_CALLS[] = {
+    {"RUMBLE", "INFRASOUND, TRUNK", R(14.0), 4, RUMBLE},
+    {"TRUMPET", "BRASS INTO CHAOS", R(470.0), 5, TRUMPET},
+    {"SQUEAK", "TENSE LIPS, HIGH", R(850.0), 4, SQUEAK},
+};
+const ch_cdef_t CH_ELEPHANT = {"ELEPHANT", CH_ELE_NP, 3, ELE_P, ELE_CALLS, R(0.012), R(0.06)};
+
+void ch_elephant_wave(ch_wave_t *w, ch_real fs, int ctrl)
+{
+    mammal_wave(w, fs, ctrl, CH_ELE_DIV, R(60.0), R(14.0), R(0.6), CH_ELE_GAIN);
+    ch_wave_nose(w, 0, R(14.0), R(6.0), R(6.0));                  /* the trunk's base (CHIMERA's "nasal" tube) */
+    w->valve_m = (int16_t)ch_wave_nose(w, 1, R(185.0), R(4.2), R(1.2));   /* the valve, then the trunk to its tip */
+    w->fade_n = R(0.998);   /* the nose's loss a section (the human's 0.99 over the trunk's 117 left its trumpet 7 dB
+                             * under CHIMERA's and too weak to buzz; lab/port/cre_test against its renders: the rumble,
+                             * trumpet and squeak within 1-4 dB) */
+}
+
+void ch_elephant_control(const ch_cvoice_t *v, ch_real fs, ch_glottis_params_t *g, ch_real *p_lung, ch_shape_t *shape,
+                         ch_wvalve_t *valve)
+{
+    const ch_real *p = v->value, mode = p[CH_ELE_MODE], to_trunk = p[CH_ELE_TRUNK];
+    *p_lung = p[CH_ELE_PRESSURE] * CMH2O * v->gate;
+    /* rumble: the folds vibrate; trumpet: the folds open, the valve buzzes */
+    *g = DEFAULT_GLOTTIS;
+    g->f0 = p[CH_ELE_PITCH];
+    g->amplitude = R(1.6) * (R(1.0) - mode);
+    g->abduction = R(0.05) + R(3.0) * mode;
+    g->open_quotient = R(0.6);
+    g->closure_sharpness = R(0.6);
+    g->effort = R(0.9);
+    g->chaos = p[CH_ELE_CHAOS] * R(0.6);
+    valve->mode = mode;
+    valve->f = p[CH_ELE_LIP_PITCH];
+    valve->zeta = R(0.08);
+    valve->h0 = R(0.003);                    /* a slight rest gap: buzzing lips start from just apart */
+    valve->width = R(2.4);
+    valve->surface_per_mass = R(40.0);
+    mammal_tubes(shape, R(32.0), R(14.0), R(28.0), R(10.0), R(0.05) + R(10.0) * (R(1.0) - to_trunk));
+    shape->velum_port_area = R(0.1) + R(6.0) * to_trunk;
+    mammal_noise(shape, fs, R(4e-7) * (R(1.0) - mode), 0);
+}
+#undef G
+
+/* ------------------------------------------------------------- the interpolator --- */
+void ch_up_init(ch_up_t *u, int d, ch_real cut)
+{
+    const int len = CH_UP_TAPS * d;
+    int k, j;
+    u->d = d;
+    for (k = 0; k < CH_UP_TAPS; k++)
+        u->x[k] = 0;
+    for (j = 0; j < d; j++) {
+        ch_real sum = 0;
+        for (k = 0; k < CH_UP_TAPS; k++) {
+            const int i = j + d * k;
+            const ch_real t = ((ch_real)i - R(0.5) * (ch_real)(len - 1)) / (ch_real)d;   /* (low-rate samples) */
+            const ch_real a = CH_PI * cut * t;
+            const ch_real wn = R(0.42) - R(0.5) * COS(R(2.0) * CH_PI * ((ch_real)i + R(0.5)) / (ch_real)len)
+                               + R(0.08) * COS(R(4.0) * CH_PI * ((ch_real)i + R(0.5)) / (ch_real)len);   /* Blackman */
+            u->h[j][k] = (FABS(a) < R(1e-6) ? R(1.0) : SIN(a) / a) * wn;
+            sum += u->h[j][k];
+        }
+        for (k = 0; k < CH_UP_TAPS; k++)
+            u->h[j][k] /= sum;                /* (each phase passes DC whole) */
+    }
+}
+
+CH_HOT void ch_up_run(ch_up_t *u, const float *in, int n, float *out)
+{
+    const int d = u->d;
+    int i, j, k;
+    for (i = 0; i < n; i++) {
+        for (k = CH_UP_TAPS - 1; k > 0; k--)
+            u->x[k] = u->x[k - 1];
+        u->x[0] = in[i];
+        for (j = 0; j < d; j++) {
+            ch_real y = 0;
+            for (k = 0; k < CH_UP_TAPS; k++)
+                y += u->h[j][k] * u->x[k];
+            *out++ = (float)y;
+        }
+    }
+}

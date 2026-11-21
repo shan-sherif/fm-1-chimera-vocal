@@ -68,6 +68,7 @@ typedef struct {                             /* one control step, from the first
     uint8_t has_shape, steps;                /* (steps: how many control steps to glide to it over) */
     ch_glottis_params_t g;
     float p_lung;
+    ch_wvalve_t valve;                       /* (the elephant's lips) */
 } step_t;
 static ch_tract_t tract PLAT_POOL;
 static ch_control_t ctl PLAT_POOL;
@@ -185,8 +186,16 @@ static volatile uint8_t cm_dirty;
 static ch_cvoice_t cvoice PLAT_POOL;
 static ch_seal_t seal;
 static ch_bird_t bird PLAT_POOL;
-#define NCRE 2                               /* the Bestiary's creatures: the seal, the songbird */
-static const ch_cdef_t *const CRE_DEF[NCRE] = {&CH_SEAL, &CH_BIRD};
+#define NCRE 4                               /* the Bestiary's creatures: the seal, the songbird, the alligator (0.9.0), the
+                                              * elephant (0.9.0) */
+enum { CRE_SEAL, CRE_BIRD, CRE_GATOR, CRE_ELEPHANT };
+static const ch_cdef_t *const CRE_DEF[NCRE] = {&CH_SEAL, &CH_BIRD, &CH_GATOR, &CH_ELEPHANT};
+static volatile float ele_lips_max;         /* (the test: the elephant's lips, their widest) */
+static ch_up_t cre_up;                       /* the alligator's and the elephant's: their half rate up to 44.1 kHz */
+static volatile uint8_t cre_div = 1;         /* the audio's creature runs at VM_FS / cre_div */
+#define CRE_LEVEL 1.6f                       /* the alligator's and the elephant's output gain on CHIMERA's (+4 dB: the
+                                              * FM-1's voice is 4 dB over CHIMERA's; lab/port/cre_test: their levels
+                                              * within ~1 dB of CHIMERA's renders) */
 static volatile uint8_t cre_req, cre_audio;  /* the creature asked for (main loop), the one the audio has */
 static volatile uint8_t bird_audio;          /* the audio renders the songbird (on the second core, whole) */
 static uint8_t cm_seen;
@@ -217,10 +226,16 @@ static void control_step(step_t *d)
         d->has_shape = 0;
         return;
     }
-    if (seal_audio) {                        /* the seal: its tubes every step (no anatomy), its glottis, its lungs */
-        const float dt = (float)VM_CTRL / (float)VM_FS;
+    if (seal_audio) {                        /* the seal: its tubes every step (no anatomy), its glottis, its lungs; the
+                                              * alligator and the elephant the same, at their rate */
+        const float dt = (float)VM_CTRL / (float)VM_FS, fs = (float)VM_FS / (float)cre_div;
         ch_cvoice_step(&cvoice, dt);
-        ch_seal_control(&seal, &cvoice, dt, (float)VM_FS, &d->g, &d->p_lung, &d->shape);
+        if (cre_audio == CRE_GATOR)
+            ch_gator_control(&cvoice, fs, &d->g, &d->p_lung, &d->shape);
+        else if (cre_audio == CRE_ELEPHANT)
+            ch_elephant_control(&cvoice, fs, &d->g, &d->p_lung, &d->shape, &d->valve);
+        else
+            ch_seal_control(&seal, &cvoice, dt, (float)VM_FS, &d->g, &d->p_lung, &d->shape);
         d->has_shape = 1;
         d->steps = 1;
         xbend_now += (xbend_target - xbend_now) * 0.25f;
@@ -264,6 +279,22 @@ __attribute__((section(".c1_text"))) static void tract_job(uint32_t which)
         return;
     }
     wave.shelf_g = shelf_on && !seal_audio ? SHELF_G : 0.0f;
+    if (cre_div > 1) {                       /* the alligator, the elephant: their waveguide at its rate, interpolated up */
+        const int nl = VM_CTRL / cre_div;
+        float low[VM_CTRL];
+        for (s = 0; s < NSUB; s++) {
+            step_t *d = &steps[which][s];
+            if (cre_audio == CRE_ELEPHANT)
+                ch_wave_valve(&wave, &d->valve);
+            ch_wave_block(&wave, d->has_shape ? &d->shape : 0, d->steps, &d->g, d->p_lung);
+            ch_wave_render(&wave, low, (uint32_t)nl);
+            ch_up_run(&cre_up, low, nl, vbuf + (uint32_t)s * VM_CTRL);
+            if (wave.vlv_open > ele_lips_max)
+                ele_lips_max = wave.vlv_open;
+        }
+        c1_last = PLAT_FAR(plat_ticks24)() - t0;
+        return;
+    }
     for (s = 0; s < NSUB; s++) {
         step_t *d = &steps[which][s];
         ch_wave_block(&wave, d->has_shape ? &d->shape : 0, d->steps, &d->g, d->p_lung);
@@ -610,15 +641,29 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         body_audio = body_req;
         seal_audio = body_audio == BODY_SEAL;
         bird_audio = 0;
+        cre_div = 1;
         if (seal_audio) {                     /* the Bestiary: its creature's voice anew */
             cre_audio = cre_req;
             ch_cvoice_init(&cvoice, CRE_DEF[cre_audio]);
             cm_seen = cm_out.call_seq;        /* (no call carried over) */
             cm_dirty = 1;                     /* (its settings again, into the new voice) */
         }
-        if (seal_audio && cre_audio == 1) {   /* the songbird: its airway at rest */
+        if (seal_audio && cre_audio == CRE_BIRD) {   /* the songbird: its airway at rest */
             ch_bird_init(&bird, &cvoice);
             bird_audio = 1;
+            for (s2 = 0; s2 < NSUB; s2++)
+                steps[cur][s2].has_shape = 0;
+            gain_now = 0.0f;
+            goto switched;
+        }
+        if (seal_audio && (cre_audio == CRE_GATOR || cre_audio == CRE_ELEPHANT)) {   /* at half the rate, interpolated */
+            if (cre_audio == CRE_GATOR)
+                ch_gator_wave(&wave, (float)VM_FS, VM_CTRL);
+            else
+                ch_elephant_wave(&wave, (float)VM_FS, VM_CTRL);
+            wave.output_gain *= CRE_LEVEL;
+            cre_div = (uint8_t)(cre_audio == CRE_GATOR ? CH_GATOR_DIV : CH_ELE_DIV);
+            ch_up_init(&cre_up, cre_div, 0.9f);
             for (s2 = 0; s2 < NSUB; s2++)
                 steps[cur][s2].has_shape = 0;
             gain_now = 0.0f;
@@ -2006,11 +2051,13 @@ static void body_settle(uint32_t now)          /* ALGORITHM at rest: the body sw
  * The keys play its pitch (its breath on while one is held, the last held sounding), SEL turns its two pages of
  * settings on K1-K4, PRESET picks a call, PLAY plays it at its own pitch, FX + a key at the key's. SAVE keeps each
  * one's settings and call (OBJ_CREATURES) */
-#define CREATURES_MAGIC 0x32524352u           /* "CRC2" */
+#define CREATURES_MAGIC 0x33524352u           /* "CRC3" (0.9.0: four creatures; "CRC2", the seal's and the songbird's, is
+                                               * carried over) */
+#define CREATURES_MAGIC2 0x32524352u
 static struct {
     uint32_t magic;
     float set[NCRE][CH_CP_MAX];
-    uint8_t call[NCRE], which, rsv[1];
+    uint8_t call[NCRE], which, rsv[3];
 } cre;
 static uint8_t seal_page;                     /* its settings' page, 0 or 1 */
 static int32_t skeys[16];                     /* its keys down, oldest first (MIDI notes) */
@@ -2020,16 +2067,57 @@ static int8_t seal_playing = -1;              /* the call played last (shown), -
 static uint32_t seal_played_at;
 static const int8_t CRE_PAGE[NCRE][2][4] = {
     {{CH_SEAL_PULSE_RATE, CH_SEAL_PULSE, CH_SEAL_DUTY, CH_SEAL_BRIGHT}, {CH_SEAL_ROUGH, CH_SEAL_PRESSURE, CH_SEAL_MOUTH, -1}},
-    {{CH_BIRD_INTERVAL, CH_BIRD_VOICES, CH_BIRD_DRIVE, CH_BIRD_TENSION}, {CH_BIRD_PRESSURE, CH_BIRD_PURITY, CH_BIRD_OEC, CH_BIRD_GAPE}}};
-static const char *const CRE_PAGE_NAME[NCRE][2] = {{"PULSE", "VOICE"}, {"SYRINX", "THROAT"}};
+    {{CH_BIRD_INTERVAL, CH_BIRD_VOICES, CH_BIRD_DRIVE, CH_BIRD_TENSION}, {CH_BIRD_PRESSURE, CH_BIRD_PURITY, CH_BIRD_OEC, CH_BIRD_GAPE}},
+    {{CH_GATOR_CHAOS, CH_GATOR_PRESSURE, CH_GATOR_HISS, -1}, {CH_GATOR_MOUTH, CH_GATOR_NOSTRILS, -1, -1}},
+    {{CH_ELE_MODE, CH_ELE_LIP_PITCH, CH_ELE_PRESSURE, CH_ELE_CHAOS}, {CH_ELE_TRUNK, -1, -1, -1}}};
+static const char *const CRE_PAGE_NAME[NCRE][2] = {{"PULSE", "VOICE"}, {"SYRINX", "THROAT"}, {"ROAR", "AIRWAY"},
+                                                   {"VOICE", "AIRWAY"}};
 #define CRE (CRE_DEF[cre.which])
+
+/* a creature's pitch: its setting the keys and the calls play (the elephant's is its second) */
+static int cre_pitch(const ch_cdef_t *d)
+{
+    int i;
+    for (i = 0; i < d->np; i++)
+        if (d->p[i].pitch)
+            return i;
+    return 0;
+}
 
 static void creatures_load(void)
 {
-    int i, c;
-    if (plat_store_load(OBJ_CREATURES, &cre, sizeof cre) == (int)sizeof cre && cre.magic == CREATURES_MAGIC
-        && cre.which < NCRE && cre.call[0] < CH_SEAL.ncalls && cre.call[1] < CH_BIRD.ncalls)
+    int i, c, n = plat_store_load(OBJ_CREATURES, &cre, sizeof cre), ok = 1;
+    if (n == (int)sizeof cre && cre.magic == CREATURES_MAGIC && cre.which < NCRE) {
+        for (c = 0; c < NCRE; c++)
+            ok &= cre.call[c] < CRE_DEF[c]->ncalls;
+        if (ok)
+            return;
+    }
+    if (n == 4 + 2 * CH_CP_MAX * 4 + 4 && cre.magic == CREATURES_MAGIC2) {   /* 0.7.0's: the seal and the songbird */
+        static uint8_t old[4 + 2 * CH_CP_MAX * 4 + 4];
+        const uint8_t *b = old + 4 + 2 * CH_CP_MAX * 4;
+        plat_store_load(OBJ_CREATURES, old, sizeof old);
+        cre.magic = CREATURES_MAGIC;
+        for (c = 0; c < 2; c++) {
+            for (i = 0; i < CH_CP_MAX; i++) {
+                float v;
+                const uint8_t *q = old + 4 + (c * CH_CP_MAX + i) * 4;
+                ((uint8_t *)&v)[0] = q[0];
+                ((uint8_t *)&v)[1] = q[1];
+                ((uint8_t *)&v)[2] = q[2];
+                ((uint8_t *)&v)[3] = q[3];
+                cre.set[c][i] = v;
+            }
+            cre.call[c] = b[c] < CRE_DEF[c]->ncalls ? b[c] : 0;
+        }
+        cre.which = b[2] < 2 ? b[2] : 0;
+        for (c = 2; c < NCRE; c++) {
+            for (i = 0; i < CH_CP_MAX; i++)
+                cre.set[c][i] = i < CRE_DEF[c]->np ? CRE_DEF[c]->p[i].def : 0.0f;
+            cre.call[c] = 0;
+        }
         return;
+    }
     cre.magic = CREATURES_MAGIC;
     for (c = 0; c < NCRE; c++) {
         for (i = 0; i < CH_CP_MAX; i++)
@@ -2047,7 +2135,7 @@ static void cm_send(int call, float pitch)
     for (i = 0; i < CH_CP_MAX; i++)
         m.perf[i] = cre.set[cre.which][i];
     if (n_skeys)
-        m.perf[0] = ch_ckey_hz(&CRE->p[0], (float)skeys[n_skeys - 1]);   /* (each creature's pitch: setting 0) */
+        m.perf[cre_pitch(CRE)] = ch_ckey_hz(&CRE->p[cre_pitch(CRE)], (float)skeys[n_skeys - 1]);   /* (its pitch setting) */
     m.gate = n_skeys ? 1.0f : 0.0f;
     m.call = cm_out.call;
     m.call_seq = cm_out.call_seq;
@@ -2112,7 +2200,7 @@ static void seal_off(int32_t note)
 static void seal_call(int32_t note)           /* the call PRESET picked (note < 0: at its own pitch) */
 {
     const int c = cre.call[cre.which];
-    const float hz = note >= 0 ? ch_ckey_hz(&CRE->p[0], (float)note) : 0.0f;
+    const float hz = note >= 0 ? ch_ckey_hz(&CRE->p[cre_pitch(CRE)], (float)note) : 0.0f;
     cm_send(c, hz);
     app_say(CRE->calls[c].name, CRE->calls[c].hint);
 }
@@ -3546,6 +3634,43 @@ static void draw_airway(int32_t y0)          /* the creature's airway, side on (
         cv_rect(tx + w1 + w2 * 4 / 5, ty + (h - open) / 2, w2 / 5, open, air);
         cv_text(tx, ty + h + 6, &FONT_XS, "THROAT", V_BLUE_DIM);
         cv_text(tx + w1, ty + h + 6, &FONT_XS, "MOUTH", V_BLUE_DIM);
+    } else if (cre.which == CRE_GATOR) {     /* the alligator: throat 18 cm, mouth 24 cm (nearly shut), the nose 26 cm */
+        const float *v = cre.set[CRE_GATOR];
+        const int32_t w1 = 40, w2 = 54, open = 1 + (int32_t)(v[CH_GATOR_MOUTH] * 12.0f), port = 1 + (int32_t)(v[CH_GATOR_NOSTRILS] * 3.0f);
+        cv_rect(tx - 2, ty, 2, h, V_PINK);                                   /* the glottis */
+        cv_rect(tx, ty, w1 + w2, 1, line);
+        cv_rect(tx, ty + h - 1, w1 + w2, 1, line);
+        cv_rect(tx, ty + 1, w1 + w2 - 8, h - 2, air);
+        cv_rect(tx + w1 + w2 - 8, ty + (h - open) / 2, 8, open, air);       /* the mouth's opening */
+        cv_rect(tx + w1 - 6, ty - 7, port, 8, air);                          /* the velum's port, as open as NOSE */
+        cv_rect(tx + w1 - 6, ty - 12, 56, 1, line);                          /* the nose */
+        cv_rect(tx + w1 - 6, ty - 11, 56, 4, air);
+        cv_rect(tx + w1 - 6 + port, ty - 7, 56 - port, 1, line);
+        cv_text(tx, ty + h + 6, &FONT_XS, "THROAT", V_BLUE_DIM);
+        cv_text(tx + w1 + w2 - text_w(&FONT_XS, "MOUTH"), ty + h + 6, &FONT_XS, "MOUTH", V_BLUE_DIM);
+        cv_text(tx + w1 + 54, ty - 13, &FONT_XS, "NOSE", V_BLUE_DIM);
+    } else if (cre.which == CRE_ELEPHANT) {  /* the elephant: throat 32 cm, mouth 28, the trunk's base, its valve, the trunk */
+        const float *v = cre.set[CRE_ELEPHANT];
+        const float lo = seal_audio && cre_audio == CRE_ELEPHANT ? wave.vlv_open / 1.2f : 0.0f;   /* (CHIMERA's: of 1.2 cm2) */
+        const int lips = (int)((lo > 1.0f ? 1.0f : lo) * 255.0f);
+        const int32_t w1 = 36, w2 = 32, open = 1 + (int32_t)((1.0f - v[CH_ELE_TRUNK]) * 12.0f);
+        int32_t i, x0 = tx + w1 - 4;
+        cv_rect(tx - 2, ty, 2, h, V_PINK);                                   /* the glottis */
+        cv_rect(tx, ty, w1 + w2, 1, line);
+        cv_rect(tx, ty + h - 1, w1 + w2, 1, line);
+        cv_rect(tx, ty + 1, w1 + w2 - 5, h - 2, air);
+        cv_rect(tx + w1 + w2 - 5, ty + (h - open) / 2, 5, open, air);       /* the mouth, shut as the air goes to the trunk */
+        cv_rect(x0, ty - 6, 4, 6, air);                                      /* up through the velum */
+        cv_rect(x0, ty - 10, 12, 5, air);                                    /* the trunk's base */
+        cv_rect(x0 + 12, ty - 12, 3, 9, RGB(0x33 + lips * 0xcc / 255, 0x10 + lips * 0x63 / 255, 0x30 + lips * 0x9f / 255));   /* its lips */
+        for (i = 0; i < 70; i++) {                                           /* the trunk, narrowing to its tip */
+            const int32_t th = 5 - (int32_t)(i * 3 / 70);
+            cv_rect(x0 + 15 + i, ty - 8 - th / 2, 1, th, air);
+            cv_rect(x0 + 15 + i, ty - 9 - th / 2, 1, 1, line);
+            cv_rect(x0 + 15 + i, ty - 8 - th / 2 + th, 1, 1, line);
+        }
+        cv_text(tx + w1 + w2 - text_w(&FONT_XS, "MOUTH"), ty + h + 6, &FONT_XS, "MOUTH", V_BLUE_DIM);   /* (no room for THROAT) */
+        cv_text(x0 + 50, ty + 2, &FONT_XS, "TRUNK", V_BLUE_DIM);
     } else {                                 /* the songbird: two bronchi, their valves, trachea, cavity, beak */
         const int bl = bird_audio ? (int)(bird.l.opening * 255.0f) : 0, br = bird_audio ? (int)(bird.r.opening * 255.0f) : 0;
         const int32_t gape = 1 + (int32_t)(cre.set[1][CH_BIRD_GAPE] * 9.0f);
@@ -3576,9 +3701,14 @@ static void draw_seal(void)
     int32_t x, i;
     const int pick = cre.call[cre.which];
     const int playing = seal_playing >= 0 && (cvoice.call >= 0 || plat_ms() - seal_played_at < 300u);   /* (its call sounding) */
-    float hz = n_skeys ? ch_ckey_hz(&d->p[0], (float)skeys[n_skeys - 1]) : cre.set[cre.which][0];
+    const int pi = cre_pitch(d);
+    float hz = n_skeys ? ch_ckey_hz(&d->p[pi], (float)skeys[n_skeys - 1]) : cre.set[cre.which][pi];
     if (cre_audio == cre.which && (cvoice.call >= 0 || cvoice.gate > 0.05f))   /* sounding: its pitch as it is */
-        hz = cvoice.value[0];
+        hz = cvoice.value[pi];
+    if (cre.which == CRE_ELEPHANT && cre_audio == CRE_ELEPHANT && cvoice.value[CH_ELE_MODE] > 0.5f)
+        hz = cvoice.value[CH_ELE_LIP_PITCH];   /* (trumpeting: the lips are what sounds) */
+    else if (cre.which == CRE_ELEPHANT && !n_skeys && cvoice.call < 0 && cre.set[CRE_ELEPHANT][CH_ELE_MODE] > 0.5f)
+        hz = cre.set[CRE_ELEPHANT][CH_ELE_LIP_PITCH];
     /* the header */
     cv_begin(240, HOME_TOP, C_BLACK);
     if (plat_ms() < ui.msg_until) {
@@ -3974,10 +4104,12 @@ int app_expect(const char *what, int *got)
     else if (!strcmp(what, "sealaudio"))     /* the seal: the audio renders it, its call playing (-1 none), its pitch (Hz),
                                               * its gate (%), its page, its call picked, its breath setting (x10) */
         *got = seal_audio;
+    else if (!strcmp(what, "elelips"))       /* the elephant's lips: the most they opened since the last ask (x1000 cm2) */
+        *got = (int)(ele_lips_max * 1000.0f), ele_lips_max = 0.0f;
     else if (!strcmp(what, "sealcall"))
         *got = cvoice.call;
     else if (!strcmp(what, "sealhz"))
-        *got = (int)(cvoice.value[0] + 0.5f);
+        *got = (int)(cvoice.value[cre_pitch(CRE_DEF[cre_audio])] + 0.5f);
     else if (!strcmp(what, "sealgate"))
         *got = (int)(cvoice.gate * 100.0f + 0.5f);
     else if (!strcmp(what, "sealpage"))
@@ -3986,11 +4118,11 @@ int app_expect(const char *what, int *got)
         *got = cre.call[cre.which];
     else if (!strcmp(what, "sealrate"))
         *got = (int)(cre.set[0][CH_SEAL_PULSE_RATE] * 10.0f + 0.5f);
-    else if (!strcmp(what, "creature"))      /* the Bestiary's creature (0 the seal, 1 the songbird), the audio's, the
-                                              * songbird's interval (st x10) */
+    else if (!strcmp(what, "creature"))      /* the Bestiary's creature (0 the seal, 1 the songbird, 2 the alligator, 3 the
+                                              * elephant), the audio's (-1 the human voice), the songbird's interval (st x10) */
         *got = cre.which;
     else if (!strcmp(what, "creaudio"))
-        *got = bird_audio ? 1 : seal_audio ? 0 : -1;
+        *got = seal_audio ? cre_audio : -1;
     else if (!strcmp(what, "birdint"))
         *got = (int)(cre.set[1][CH_BIRD_INTERVAL] * 10.0f + (cre.set[1][CH_BIRD_INTERVAL] >= 0 ? 0.5f : -0.5f));
     else if (!strcmp(what, "beatage"))       /* audio blocks since that sound */

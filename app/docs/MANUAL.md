@@ -7,7 +7,7 @@ airway (lungs, vocal folds, throat, mouth and nose), not samples.
 FM-1 Chimera Vocal sings words: each key sings the next syllable of a line, at the key's pitch, through CHIMERA's own
 text-to-speech front end. In VOWEL mode the keys play pitch and the knobs move the mouth through the vowels. The screen
 is CHIMERA's flat view, live: the head moving as it sings. From 0.8.0 it also sings whole lines on CHIMERA's tunes (ENV). From 0.7.0 the same mouth beatboxes (SEQ), and LFO swaps
-it for a seal's or a songbird's (CHIMERA's Bestiary).
+it for a seal's, a songbird's, an alligator's or an elephant's (CHIMERA's Bestiary).
 
 ![The boot screen: FM-1 Chimera Vocal, the version, the credits](img/boot.png "The boot screen")
 ![The home screen in WORDS: the head singing, NOW LO, NEXT THERE, page 1's knobs at the bottom](img/home-words.png "WORDS: singing the lo of Hello, there next; page 1's knobs below")
@@ -59,7 +59,7 @@ The FM-1 itself has no mod wheel or pitch bend: these come from the controller. 
 | SAVE | Keeps the knobs in the voice preset, the vowel snapshots and the settings, through power-off. Its light is on while something is unsaved. |
 | ENV | Sings the word slot on one of CHIMERA's tunes ([below](#tunes)). From 0.8.0. |
 | SEQ | The beatbox and back: the keys become CHIMERA's drum sounds, with a step sequencer ([below](#beatbox)). From 0.7.0. |
-| LFO | The Bestiary (the seal or the songbird) and back to the human voice ([below](#bestiary)). Its light is on in the Bestiary. From 0.7.0. |
+| LFO | The Bestiary (the seal, the songbird, the alligator or the elephant) and back to the human voice ([below](#bestiary)). Its light is on in the Bestiary. From 0.7.0. |
 | GLO | The debug page (the cores' timings) and back. From 0.8.0 it also opens over the beatbox and the SING page, to see their load while they play. |
 
 ## The knobs
@@ -185,14 +185,15 @@ compressor), as CHIMERA's does.
 ## Bestiary
 
 **LFO** swaps the human voice for an animal's from CHIMERA's Bestiary (from 0.7.0), and **LFO** again goes back to
-the human body ALGORITHM holds. On the Bestiary page **ALGORITHM** chooses the creature: the **seal** or the
-**songbird**. Each one is simulated the way the human voice is, from its own airway and its own sound source.
+the human body ALGORITHM holds. On the Bestiary page **ALGORITHM** chooses the creature: the **seal**, the
+**songbird**, the **alligator** or the **elephant** (the last two from 0.9.0). Each one is simulated the way the human
+voice is, from its own airway and its own sound source.
 
-On either creature:
+On every creature:
 
 - **The keys** play its pitch: it breathes while a key is held, the last key held sounding. The keys are shifted by
-  whole octaves to sit in the creature's range (CHIMERA's mapping, centred on middle C), so they sound above their
-  names: one octave for the seal, three for the songbird.
+  whole octaves to sit in the creature's range (CHIMERA's mapping, centred on middle C): one octave up for the seal,
+  three up for the songbird, three down for the alligator, four down for the elephant.
 - **PRESET** chooses one of its calls. **PLAY** plays it; **FX + a key** plays it at the key's pitch.
 - **K1-K4** are its settings, on two pages (**SEL**).
 - **SAVE** keeps each creature's settings and call. The beatbox needs a human body: LFO back first.
@@ -233,6 +234,46 @@ CHIRPS (falling, faster and faster), BUZZ (a zebra finch's, raspy, pulsed by min
 (CHIMERA simulates the songbird four times faster than the FM-1's sound runs. On the FM-1 it is a lighter airway at
 twice the rate, with the syrinx's cycles precomputed from CHIMERA's own equations; its level and harmonics are within
 a few dB of CHIMERA's.)
+
+### The alligator
+
+The **American alligator** (from 0.9.0): a chaotic, very low roar from its larynx through a long throat and a mouth
+held nearly shut, so the sound leaves by the nostrils and the body itself. Its range is 12 to 120 Hz, much of it below
+what the FM-1's speaker plays: its roughness and its upper harmonics carry it there, headphones or a speaker with bass
+the rest.
+
+| Page | K1 | K2 | K3 | K4 |
+| --- | --- | --- | --- | --- |
+| 1 ROAR | Chaos (period doubling into chaos) | Breath (the lungs' pressure, cmH₂O) | Hiss (the glottis open: air alone) | |
+| 2 AIRWAY | Mouth (its opening) | Nose (the passage to the nostrils) | | |
+
+Its calls: BELLOW (two seconds of roar, rising into full chaos), GROWL (a short, rough warning), HISS (the mouth and
+glottis open: pure turbulence), DANCE (a steady subsonic throb, the one that makes the water dance on its back).
+
+![The alligator mid-bellow: 26 Hz, its throat and long mouth, the nose above, the call BELLOW playing, page 1's settings](img/gator.png "LFO, then ALGORITHM: the alligator")
+
+### The elephant
+
+The **African elephant** (from 0.9.0): rumbles from huge vocal folds, routed through a 1.85 m trunk or the mouth, and
+trumpets from a valve at the trunk's base that buzzes like a brass player's lips and locks onto the trunk's
+resonances. TRUMPET (K1) moves from the rumble (the folds vibrate, the valve open) to the trumpet (the folds open,
+the lips buzz); LIPS sets the lips' own pitch, and the trunk pulls the note to its nearest resonance. While it
+trumpets the screen shows the lips' pitch, and their valve lights as they open. The rumble's pitch (8 to 45 Hz, the
+keys) is mostly below hearing: you hear its harmonics.
+
+| Page | K1 | K2 | K3 | K4 |
+| --- | --- | --- | --- | --- |
+| 1 VOICE | Trumpet (rumble ↔ trumpet) | Lips (the valve's pitch, Hz) | Breath (the lungs' pressure, cmH₂O) | Chaos (in the folds) |
+| 2 AIRWAY | Trunk (the air through the mouth ↔ the trunk) | | | |
+
+Its calls: RUMBLE (three seconds of infrasound through the trunk), TRUMPET (a brassy blast that bends up and breaks
+into chaos), SQUEAK (the lips tensed, high).
+
+![The elephant mid-trumpet: its lips at 480 Hz, the mouth shut, the trunk's base, its valve and the trunk, the call TRUMPET playing, page 1's settings](img/elephant.png "LFO, then ALGORITHM: the elephant")
+
+(Both are longer airways than the human's: the alligator's 68 cm, the elephant's 2.6 m with its trunk. Their sound is
+low, so on the FM-1 each is simulated at half the rate and smoothed back up: measured on the FM-1, the elephant's
+trumpet peaks at 64 % of core 2 and the alligator's bellow at 30 %. Their levels are within a few dB of CHIMERA's.)
 
 ## Typing words
 
@@ -285,7 +326,7 @@ Bestiary's (the creature's pitch, its airway, its call): see their sections.
 
 | Line | What it means |
 | --- | --- |
-| CORE 2 TRACT | The second core's share of each audio block (5.8 ms): the sound waves through the throat, mouth and nose, and the vocal folds, every sample. The average over the last half second, then the worst block. With the songbird all of it runs here (about 44 % at its worst), and CORE 1 shows 0. |
+| CORE 2 TRACT | The second core's share of each audio block (5.8 ms): the sound waves through the throat, mouth and nose, and the vocal folds, every sample. The average over the last half second, then the worst block. With the songbird all of it runs here (about 44 % at its worst), and CORE 1 shows 0. The elephant peaks at about 64 %, the alligator 30 %. |
 | CORE 1 CONTROL | The first core's share: moving the articulators along the gestures, then turning the tongue, jaw and lip positions into the shape of the tract. |
 | AUDIO LOAD | The whole audio interrupt's share of its time. |
 | XRUNS | Blocks that were late since power-on: each is a click. It should stay at 0. |

@@ -28,7 +28,8 @@
 
 #define CH_WMAX 40      /* tract sections (the adult male: ~22) */
 #define CH_WJET_AREA 1.0f   /* cm²: a junction narrower than this gets the jet's loss */
-#define CH_WNMAX 24     /* nose sections */
+#define CH_WNMAX 132    /* nose sections (the human ~14; 0.9.0: the elephant's trunk base and trunk at half the rate,
+                         * 127) */
 
 /* a tract section: its waves in two buffers (the sample reads one and writes the other: ch_wave_t.p), its area and
  * the reflection of the junction at its left end, both ramped over a control step. One struct a section: on the FM-1
@@ -49,6 +50,12 @@ typedef struct {
     uint8_t glottis;                    /* bounded by the glottis (sealed) rather than a closure on its left */
     ch_real p, dp;                      /* its pressure (dyn/cm²) and its ramp a sample */
 } ch_wpock_t;
+
+/* the valve's lips for the coming control step (CHIMERA's LipReed and the elephant's mode) */
+typedef struct {
+    ch_real mode;               /* 0 the valve wide open (vlv_rest), 1 the lips alone */
+    ch_real f, zeta, h0, width, surface_per_mass;
+} ch_wvalve_t;
 
 typedef struct {
     ch_real fs, rho_c, closed_area;
@@ -138,12 +145,24 @@ typedef struct {
     /* a treble shelf on the output (0.8.0, off unless set): x + shelf_g (x - lowpass(x)), the lowpass at shelf_c.
      * Over 3 kHz the waveguide is 3-9 dB brighter than CHIMERA's airway (its sentences' spectra, all bodies) */
     ch_real shelf_g, shelf_c, shelf_lp;
+    /* a valve in the nose (0.9.0, the elephant: CHIMERA's LipReed at its trunk's entrance, off when valve_m is 0):
+     * the junction before nose section valve_m opens as the lips do, an outward-striking mass-spring driven by the
+     * pressure across it; its flow solved each sample with the port's kinetic loss and inertance (PortSpec(0, len)
+     * .kinetic(kin, kex)). The lips' settings (ch_wvalve_t) come each control step */
+    int16_t valve_m;
+    ch_real vlv_len, vlv_kin, vlv_kex, vlv_rest;
+    ch_real vlv_h, vlv_v, vlv_open, vlv_u, vlv_mom, vlv_l, vlv_dp;
+    ch_wvalve_t vlv;
     int32_t lim_hold, lim_hold_n;
     uint32_t resets;                        /* times the state stopped being a number and was cleared (should stay 0) */
 } ch_wave_t;
 
 /* a body's waveguide: section counts from its neutral tract length (cm), the nose's from its length */
 void ch_wave_init(ch_wave_t *w, ch_real fs, int ctrl_every, ch_real body_scale, ch_real tract_len);
+/* a creature's nose (0.9.0), after ch_wave_init: ch_wave_nose(w, 0, ...) starts it anew after the velum's port, each
+ * call adds a tube len cm long whose area goes from a0 to a1 (cm2). Returns its first section */
+int ch_wave_nose(ch_wave_t *w, int add, ch_real len, ch_real a0, ch_real a1);
+void ch_wave_valve(ch_wave_t *w, const ch_wvalve_t *v);
 /* a control step: the glottis's parameters and the lungs' pressure, and when the anatomy has a new shape
  * (ch_tract_shape of an apply) that shape, glided to over `steps` control steps (the anatomy runs every `steps`
  * steps); with t NULL the tract keeps gliding to the last one */

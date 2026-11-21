@@ -10,6 +10,7 @@
 #ifndef CH_CREATURE_H
 #define CH_CREATURE_H
 #include "ch_tract.h"
+#include "ch_wave.h"
 
 #define CH_CP_MAX 10                 /* parameters a creature has (the songbird 9) */
 #define CH_CK_GATE (-1)              /* a call key's target: the gate (else a parameter's index) */
@@ -123,5 +124,45 @@ void ch_bird_init(ch_bird_t *b, const ch_cvoice_t *v);
  * geometry */
 void ch_bird_control(ch_bird_t *b, const ch_cvoice_t *v, int samples);
 ch_real ch_bird_sample(ch_bird_t *b);      /* one output sample at 44.1 kHz (two of its airway's) */
+
+/* ------------------------------------------------- the alligator and the elephant --- */
+/* Both are CHIMERA's mammal airway (creatures/mammal.rs: lungs, glottis, pharynx, then the mouth and, past the velum,
+ * the nose) on the FM-1's waveguide, as the seal is, without CHIMERA's trachea. They are long (the alligator's 42 cm
+ * tract and 26 cm nose; the elephant's 60 cm tract, 14 cm trunk base and 185 cm trunk) and low (CHIMERA's renders:
+ * the alligator has a few % of its energy over 11 kHz but its hiss, the elephant under 2 % over 5.5 kHz), so each
+ * runs at half the output's rate (22.05 kHz, 1.6 cm sections) and is interpolated up (ch_up_t). The elephant at a
+ * quarter cost a quarter as much but its trumpet lost its brass: its harmonics are strongest at 3-5.3 kHz. At half
+ * the rate its 165 sections cost about what the human voice's 43 do at the full rate (the nose's are cheaper) */
+
+/* The American alligator (creatures/alligator.rs): a chaotic laryngeal roar, very low, through a long tract with the
+ * mouth nearly shut: the sound leaves by the nostrils and the body's walls */
+enum { CH_GATOR_PITCH, CH_GATOR_CHAOS, CH_GATOR_PRESSURE, CH_GATOR_MOUTH, CH_GATOR_NOSTRILS, CH_GATOR_HISS, CH_GATOR_NP };
+extern const ch_cdef_t CH_GATOR;
+#define CH_GATOR_GAIN ((ch_real)2.8e-7)    /* its output gain (CHIMERA's) */
+#define CH_GATOR_DIV 2                     /* its rate: the output's / 2 */
+/* its waveguide anew at the output's rate fs, a control step every ctrl output samples */
+void ch_gator_wave(ch_wave_t *w, ch_real fs, int ctrl);
+void ch_gator_control(const ch_cvoice_t *v, ch_real fs, ch_glottis_params_t *g, ch_real *p_lung, ch_shape_t *shape);
+
+/* The African elephant (creatures/elephant.rs): infrasonic rumbles from huge vocal folds through the trunk or the
+ * mouth; trumpets from a lip valve at the trunk's entrance locking onto the trunk's resonances, the larynx wide open;
+ * squeaks from the lips tensed */
+enum { CH_ELE_MODE, CH_ELE_PITCH, CH_ELE_LIP_PITCH, CH_ELE_PRESSURE, CH_ELE_TRUNK, CH_ELE_CHAOS, CH_ELE_NP };
+extern const ch_cdef_t CH_ELEPHANT;
+#define CH_ELE_GAIN ((ch_real)1.8e-6)      /* its output gain (CHIMERA's) */
+#define CH_ELE_DIV 2                       /* (lab: a quarter lost the trumpet's brass) */
+void ch_elephant_wave(ch_wave_t *w, ch_real fs, int ctrl);
+void ch_elephant_control(const ch_cvoice_t *v, ch_real fs, ch_glottis_params_t *g, ch_real *p_lung, ch_shape_t *shape,
+                         ch_wvalve_t *valve);
+
+/* an interpolator by d (2 or 4): a windowed sinc, 8 taps a phase, cut at `cut` of the low rate's Nyquist (0.9: just
+ * under it) */
+#define CH_UP_TAPS 8
+typedef struct {
+    int d;
+    ch_real h[4][CH_UP_TAPS], x[CH_UP_TAPS];
+} ch_up_t;
+void ch_up_init(ch_up_t *u, int d, ch_real cut);
+void ch_up_run(ch_up_t *u, const float *in, int n, float *out);   /* n samples in, n * d out */
 
 #endif
