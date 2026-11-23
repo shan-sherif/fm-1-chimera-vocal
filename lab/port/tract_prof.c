@@ -20,7 +20,7 @@ int main(void)
     ch_real a[CH_NARTIC];
     int i, k, n = 20000;
     double total = 0;
-    body_tract_setup(&t, 0);
+    body_tract_setup(&t, &CH_BODIES[0]);
     for (k = 0; k < CH_NARTIC; k++)
         a[k] = CH_NEUTRAL[k];
     for (i = 0; i < n; i++) {               /* the jaw, tongue and lips moving through vowels and closures */

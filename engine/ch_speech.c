@@ -43,6 +43,64 @@ void ch_speech_body(int body)
     ph_tab = CH_PHONEMES_BODY[body];
     vow_tab = CH_VOWELS_BODY[body];
 }
+
+int ch_speech_blend_bytes(void) { return (int)(NPHON * sizeof(ch_phon_t) + NVOW * sizeof(ch_vowel_t)); }
+
+/* ArticPatch::blend: each target the weighted mean of the bodies that have one (a body without it leaves it to the
+ * others; none: none) */
+static ch_real blend_x(const ch_real w[3], const ch_real *const x[3])
+{
+    ch_real sum = 0, wsum = 0;
+    int b;
+    for (b = 0; b < 3; b++)
+        if (w[b] > 0 && x[b][0] == x[b][0]) {
+            sum += w[b] * x[b][0];
+            wsum += w[b];
+        }
+    return wsum > 0 ? sum / wsum : (ch_real)__builtin_nanf("");
+}
+
+int ch_speech_blend(const ch_real w[3], void *buf, int bytes)
+{
+    ch_phon_t *ph = (ch_phon_t *)buf;
+    ch_vowel_t *vw = (ch_vowel_t *)(ph + NPHON);
+    int b, i, k, near = 0;
+    for (b = 0; b < 3; b++) {
+        if (w[b] >= R(1.0)) {                 /* a body whole: its own tables, as before (no copy) */
+            ch_speech_body(b);
+            return 0;
+        }
+        if (w[b] > w[near])
+            near = b;
+    }
+    if (!buf || bytes < ch_speech_blend_bytes()) {   /* (no room: the nearest body's) */
+        ch_speech_body(near);
+        return -1;
+    }
+    for (i = 0; i < NPHON; i++) {             /* the nearest's inventory (the same in each), its targets blended */
+        ph[i] = CH_PHONEMES_BODY[near][i];
+        for (k = 0; k < CH_NARTIC; k++) {
+            const ch_real *x[3] = {&CH_PHONEMES_BODY[0][i].t[k], &CH_PHONEMES_BODY[1][i].t[k], &CH_PHONEMES_BODY[2][i].t[k]};
+            ph[i].t[k] = blend_x(w, x);
+        }
+    }
+    for (i = 0; i < NVOW; i++) {
+        vw[i] = CH_VOWELS_BODY[near][i];
+        for (k = 0; k < CH_NARTIC; k++) {
+            const ch_real *x[3] = {&CH_VOWELS_BODY[0][i].t[k], &CH_VOWELS_BODY[1][i].t[k], &CH_VOWELS_BODY[2][i].t[k]};
+            vw[i].t[k] = blend_x(w, x);
+        }
+        {
+            const ch_real *f1[3] = {&CH_VOWELS_BODY[0][i].f1, &CH_VOWELS_BODY[1][i].f1, &CH_VOWELS_BODY[2][i].f1};
+            const ch_real *f2[3] = {&CH_VOWELS_BODY[0][i].f2, &CH_VOWELS_BODY[1][i].f2, &CH_VOWELS_BODY[2][i].f2};
+            vw[i].f1 = blend_x(w, f1);
+            vw[i].f2 = blend_x(w, f2);
+        }
+    }
+    ph_tab = ph;
+    vow_tab = vw;
+    return 0;
+}
 #define BIT(k) (1u << (k))
 #define CH_NAN ((ch_real)__builtin_nanf(""))
 #if defined(CH_FM1)

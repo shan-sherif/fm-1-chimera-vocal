@@ -60,6 +60,28 @@ wait 1800
 shot body-child.png
 spin ALGO -2
 wait 600
+# a blend (SEL held + PRESET): half male, half female, the head between
+press SEL
+spin PRESET 10
+release SEL
+wait 2200
+shot blend.png
+spin ALGO 1
+wait 300
+spin ALGO -1
+wait 1800
+# TONGUE (ARP): the tongue forward, a key held
+tap ARP
+wait 300
+spin K1 10
+wait 200
+key 7 down
+wait 1500
+shot tongue.png
+key 7 up
+spin K1 -10
+tap ARP
+wait 600
 # the beatbox (SEQ): "Boots and cats" playing, the hi-hat heard; then STEP EDIT on the empty beat
 tap SEQ
 wait 100

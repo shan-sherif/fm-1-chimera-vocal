@@ -64,7 +64,7 @@ static void voice(int body)
     ch_real ready[CH_NARTIC];
     int k;
     ch_speech_body(body);
-    body_tract_setup(&tract, body);
+    body_tract_setup(&tract, &CH_BODIES[body]);
     ch_control_init(&ctl, (ch_real)FS, CTRL, 1.0f);
     ctl.k = CH_BODIES[body].scale;
     ctl.defer_contacts = 1;

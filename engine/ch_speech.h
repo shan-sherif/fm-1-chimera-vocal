@@ -71,6 +71,11 @@ extern int ch_lts_device;
 /* the body whose calibrated phonemes and vowels the front end, the planner and the vowel pad use: 0 the adult male
  * (the start), 1 the adult female, 2 the child (CHIMERA's BodyMix presets) */
 void ch_speech_body(int body);
+/* a blend of the three (1.0.0: CHIMERA's BodyMix): w[] the male's, the female's and the child's weights (they
+ * sum to 1), each target their weighted mean (ArticPatch::blend) into buf, which the front end then reads (keep it).
+ * A body whole uses its own tables. Returns 0, or -1 when buf is too small (the nearest body's then) */
+int ch_speech_blend_bytes(void);
+int ch_speech_blend(const ch_real w[3], void *buf, int bytes);
 /* the built-in pronunciation list's words (ch_dict_data.h, ~480 common English words), by index 0..count-1 */
 int ch_dict_count(void);
 const char *ch_dict_word(int i);

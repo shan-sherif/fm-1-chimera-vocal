@@ -5,7 +5,7 @@
   "author": "shan-sherif",
   "license": "MPL-2.0 AND MIT",
   "tagline": "a physically modelled human voice for the M-VAVE FM-1, ported from CHIMERA",
-  "description": "A simulated human voice: lungs, vocal folds, throat, mouth and nose, ported from Jameson Hodge's CHIMERA vocal synthesizer. Type words and the keys sing them a syllable at a time or sing them on CHIMERA's tunes, play vowels and shape the mouth with the knobs, beatbox with CHIMERA's drum sounds and step sequencer, or play its Bestiary's seal, songbird, alligator and elephant. Unofficial; not affiliated with M-VAVE or with CHIMERA's author.",
+  "description": "A simulated human voice: lungs, vocal folds, throat, mouth and nose, ported from Jameson Hodge's CHIMERA vocal synthesizer. Type words and the keys sing them a syllable at a time or sing them on CHIMERA's tunes, play vowels and shape the mouth and tongue with the knobs, blend the male, female and child bodies, beatbox with CHIMERA's drum sounds and step sequencer, or play its Bestiary's seal, songbird, alligator and elephant. Unofficial; not affiliated with M-VAVE or with CHIMERA's author.",
   "tags": ["synth", "experimental"],
   "install": "https://shan-sherif.github.io/fm-1-chimera-vocal/install/",
   "site": "https://shan-sherif.github.io/fm-1-chimera-vocal/",

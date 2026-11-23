@@ -53,7 +53,8 @@ The FM-1 itself has no mod wheel or pitch bend: these come from the controller. 
 | --- | --- |
 | HOME | WORDS mode, page 1 (SING). |
 | FX | VOWEL mode and back (a quick press). Held with a key 1-12: that vowel snapshot (below). Its light is on in VOWEL mode. |
-| SEL | The next of pages 2-5. (Until 0.5.0 this was EDIT.) |
+| SEL | The next of pages 2-5, when released (in TONGUE mode: TONGUE, SHAPE, MOUTH). Held: PRESET and SELECT blend the body ([below](#blending-the-bodies)). (Until 0.5.0 this was EDIT.) |
+| ARP | TONGUE mode and back: the tongue placed by hand, the keys playing pitch ([below](#tongue)). Its light is on in TONGUE mode. From 1.0.0. |
 | EDIT | Opens the word editor on the slot being sung: type words on the keys ([below](#typing-words)). (From 0.5.0; before, EDIT stepped the pages.) |
 | PLAY | Speaks the word slot's words (in WORDS mode). Pressing a key while it speaks starts singing instead. |
 | SAVE | Keeps the knobs in the voice preset, the vowel snapshots and the settings, through power-off. Its light is on while something is unsaved. |
@@ -103,6 +104,25 @@ screen is drawn in the body's size, and the header shows the body beside the pre
 
 (From 0.5.0. Until then ALGORITHM was Bright, and page 5's K4 was Body, which only had the male.)
 
+### Blending the bodies
+
+From 1.0.0 a body can be anywhere between the three, as CHIMERA's two body sliders make it. **Hold SEL** and turn:
+
+- **PRESET: gender**, from male (0 %) to female (100 %).
+- **SELECT: age**, from adult (0 %) to child (100 %).
+
+CHIMERA has one child, not a boy and a girl, so the two make a triangle: the more child, the less gender matters (at
+age 100 % it is the child whatever the gender). The shares are male (100 − age) × (100 − gender), female
+(100 − age) × gender, child age; the screen shows them as you turn ("M 50  F 50") and in the header after, and the voice
+switches when you let go of the knob, as ALGORITHM's does.
+
+The blend is the airway's size, throat, tongue and lips between the bodies', each sound's calibrated targets blended
+the same way (CHIMERA's own blending), the speaking pitch and the vowel pad's range between theirs. SEL released after
+a turn keeps the page; SEL alone still turns it. ALGORITHM still picks a body whole (setting both), and a preset keeps
+its blend. (Presets saved before 1.0.0 keep their body.)
+
+![A body half male, half female: M 50 F 50 in the header, the head between the two in size](img/blend.png "SEL held: PRESET to gender 50 %")
+
 **VOWEL** is CHIMERA's vowel pad: Front and Open choose a place among the vowels (by their formants, F1 and F2), and
 the voice blends the four calibrated vowels nearest it. The screen names the vowel made (in ARPAbet's letters: AA as
 in "father", IY "see", UW "you", AE "cat", AX the neutral schwa).
@@ -112,6 +132,26 @@ in "father", IY "see", UW "you", AE "cat", AX the neutral schwa).
 **Vowel snapshots:** hold FX and press one of the first twelve keys to jump to that vowel (they start as twelve
 English vowels: IY IH EY EH AE AA AO OW UH UW AH AX). Hold the key a second, with FX, to store the vowel you have
 made there instead. SAVE keeps them.
+
+## Tongue
+
+**ARP** (from 1.0.0) is CHIMERA's Play mode on the knobs: the tongue placed by hand rather than through the vowels.
+The keys play pitch, the breath on while one is held, as in VOWEL mode; the knobs move the tongue:
+
+| Page | K1 | K2 | K3 | K4 |
+| --- | --- | --- | --- | --- |
+| TONGUE | Forward (the tongue body, back ↔ front, cm) | Height (low ↔ high) | Tip fwd (the tip, back ↔ forward) | Tip up (low ↔ up to the ridge) |
+
+Unlike the vowel pad, this reaches shapes that are not vowels: the tip raised to the ridge behind the teeth closes the
+mouth there (a held note goes quiet, as in a /t/), the tongue's back raised to the palate closes it further back (/k/).
+The anatomy keeps the tongue out of the palate, as CHIMERA's does when you drag it. The screen names the vowel nearest
+the shape.
+
+**SEL** steps TONGUE, SHAPE (jaw, lips, larynx, soft palate) and MOUTH (rounding, protrusion, tongue root, tip curl):
+with those, every part CHIMERA's head lets you drag. SELECT turns through those and the voice's pages. **FX** goes to
+VOWEL mode, **ARP** or **HOME** back to WORDS (the tip resting behind the teeth again).
+
+![TONGUE mode: the tongue forward, a key held, Forward, Height, Tip fwd and Tip up at the bottom](img/tongue.png "ARP: the tongue placed by hand")
 
 ## Presets and word slots
 

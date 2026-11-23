@@ -52,8 +52,12 @@ speaks and beatboxes, and a seal's, a songbird's, an alligator's and an elephant
   release. PLAY speaks the line.
 - **VOWEL** (FX): the keys play pitch, and the knobs move the mouth through CHIMERA's vowel space; twelve vowel
   snapshots under FX + a key.
+- **TONGUE** (ARP): CHIMERA's Play mode on the knobs. The tongue body and tip placed by hand, the keys playing pitch,
+  reaching shapes that are not vowels (the tip to the ridge, the back to the palate).
 - **The knobs:** five pages of CHIMERA's own controls on K1-K4 (sing, shape, mouth, source, play), the body
   (male, female, child) on ALGORITHM, eight voice presets on PRESET.
+- **Blended bodies:** SEL held, PRESET turns gender (male to female) and SELECT age (adult to child): CHIMERA's two
+  body sliders, the airway and every sound's calibrated targets blended between its three bodies.
 - **The screen:** CHIMERA's flat view, live: the head moving as it sings, in CHIMERA's colours.
 - **The Studio:** a web page that prepares the words (eight slots) with the CMU Pronouncing Dictionary, lets you try
   them on an emulated FM-1 in the browser, and sends them to yours over USB.
@@ -88,11 +92,6 @@ gestures). Words come from the Studio or are typed on the FM-1.
 
 ## To do
 
-- **Blended bodies:** the three bodies (male, female, child) are CHIMERA's own, precomputed. Bodies in between, like
-  CHIMERA's female and child sliders, would blend them as CHIMERA does: the anatomy's four dimensions and the
-  calibrated phoneme and vowel targets by weight (`ArticPatch::blend`). The waveguide is the same size for every body,
-  so no airway builder is needed and switching costs what it does now. Worth exploring for more varied voices if
-  shifting pitch outside the FM-1 (an external pitch or formant shifter) doesn't already give enough variety.
 - **Sharper consonants:** the anatomy every 2nd control step (`ANAT_EVERY` in `app/app.c`; every 4th now). 0.8.0 made
   it 35 % faster (each outline segment's reciprocals once, the nearest chunks first), but every 2nd still peaks at 98 %
   of core 1 while it speaks (84 % while it sings), and the difference was hard to hear, in speech and in songs;
@@ -120,9 +119,6 @@ gestures). Words come from the Studio or are typed on the FM-1.
   needs a native speaker's check.
 - **IPA input:** speaking or singing exact phonemes rather than English spelling (CHIMERA's IPA mode), from the
   Studio; the device's editor types letters only.
-- **The tongue by hand:** CHIMERA's Play mode drags the tongue, lips and jaw in the head; the FM-1 reaches the tongue
-  body through the vowel pad (VOWEL) and the rest on the knobs. A page that places the tongue body directly (K1 front
-  / back, K2 up / down) would come closest.
 - **Readouts:** CHIMERA shows the airway's pressure and flow, the spectrum and the formants live; the debug page could
   show a small formant or pressure readout.
 - **CHIMERA's other sources** (`sources/valves.rs`): the lip reed (the elephant's trumpet, a beatbox lip buzz), an
@@ -227,7 +223,8 @@ from gitee, Emscripten, CHIMERA's dictionary at a fixed commit) and deploys it t
 `version` line in `app/fm1.toml`.
 
 The simulator's tests (`app/tests/`): `silence`, `rest`, `words`, `pages`, `screens`, `studio` (the Studio's SysEx),
-`edit` (the word editor), `bodies` (male, female, child), `expression` (pressure, aftertouch, mod wheel, pitch bend),
+`edit` (the word editor), `bodies` (male, female, child), `blend` (the bodies blended: SEL with PRESET and SELECT, a preset's blend),
+`tongue` (TONGUE: the tongue placed, the tip held, its pages), `expression` (pressure, aftertouch, mod wheel, pitch bend),
 `crack` (no crack where a nasal ends a word),
 `beat` (the beatbox: pads, a beat, step editing, saving), `seal` (the Bestiary's seal: keys, calls, settings),
 `bird` (the Bestiary's songbird: keys, calls, settings), `beasts` (the alligator and the elephant: keys, calls, the

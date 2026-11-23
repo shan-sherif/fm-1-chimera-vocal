@@ -1,0 +1,63 @@
+# The body's blend (1.0.0, CHIMERA's BodyMix): SEL held, PRESET turns gender (male -> female), SELECT age (adult ->
+# child), switched when they rest; SEL released after a turn keeps the page, SEL alone still turns it. A half-female
+# body is between the two in size and speaking pitch, and sings; ALGORITHM still picks a body whole; the blend is a
+# preset's (kept through a reboot).
+#   python base/tools/build.py app --host; app/build/host/chimera_host app/tests/blend.txt app/build/host
+wait 400
+listen
+expect body 0
+expect gender 0
+expect age 0
+expect bodyk 1000
+expect f0x 112
+# SEL held + PRESET: gender 50 %
+press SEL
+spin PRESET 10
+said GENDER
+release SEL
+expect page 0
+expect gender 50
+wait 600
+expect bodyk 950
+expect f0x 152
+wav blend-half.wav
+peakreset
+tap PLAY
+wait 2500
+wavstop
+expect peak_db_max -1
+expect peak_db_min -30
+shot blend-half.png
+# SEL held + SELECT: age 30 % (male 35, female 35, child 30)
+press SEL
+spin SELECT 6
+said AGE
+release SEL
+expect age 30
+wait 600
+expect bodyk 887
+# SEL alone still turns the page
+tap SEL
+expect page 1
+# ALGORITHM: the child whole
+spin ALGO 2
+said CHILD
+wait 600
+expect body 2
+expect gender 0
+expect age 100
+expect bodyk 740
+# a blend kept in a preset: gender 80 %, saved, through a reboot
+spin ALGO -2
+wait 600
+press SEL
+spin PRESET 16
+release SEL
+wait 600
+expect gender 80
+tap SAVE
+wait 100
+reboot
+wait 600
+expect gender 80
+expect bodyk 920

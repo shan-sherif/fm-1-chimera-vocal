@@ -56,7 +56,22 @@ static const float BODY_FADE[4] = {0.995f, 0.995f, 0.98f, 0.995f};
  * +4.5 dB puts it back in line (the lab's level against CHIMERA's render) */
 static const float BODY_GAIN[4] = {1.0f, 1.0f, 1.68f, 1.0f};   /* (the seal's level: its output gain, below) */
 static volatile uint8_t body_req, body_audio; /* the body asked for, and the one the audio has (it switches at a block) */
-#define SPEECH_F0 (CH_BODIES[body_hum].f0)   /* the body's speaking pitch (lab record: CHIMERA's render) */
+#define SPEECH_F0 (mix_main.b.f0)          /* the body's speaking pitch (lab record: CHIMERA's render; a blend's between) */
+/* the body as a blend of the three (1.0.0, CHIMERA's BodyMix: gender, the male-female axis, and age, toward the child;
+ * weights male (1 - a)(1 - g), female (1 - a) g, child a): its anatomy's dimensions by weight, its speaking pitch and
+ * its vowels' scale by weight in log, the waveguide's loss and the level by weight, the airway's indices and the name
+ * the nearest body's */
+typedef struct {
+    ch_body_t b;
+    float fade, gain;
+} bodymix_t;
+static bodymix_t mix_main;                    /* main loop: the body the knobs hold */
+static bodymix_t mix_req;                     /* (for the audio, at its next block) */
+static volatile uint8_t mix_seq;
+static uint8_t mix_seq_audio;
+static float body_gain_audio = 1.0f;
+static void body_mix(const float w[3], int near, bodymix_t *m);
+static float body_g = -1.0f, body_a = -1.0f;  /* main loop: the blend applied (-1: none yet) */
 static const char *body_name(int b) { return b >= 0 && b < NBODIES ? CH_BODIES[b].name : "SEAL"; }
 
 #define NSUB ((int)(APP_BLOCK / VM_CTRL))           /* control steps a block */
@@ -307,7 +322,14 @@ static void voice_init(void)
 {
     int s;
     ch_source_t src;
-    body_tract_setup(&tract, 0);
+    body_tract_setup(&tract, &CH_BODIES[0]);
+    {   /* the male whole, until the knobs say otherwise */
+        static const float w[3] = {1, 0, 0};
+        body_mix(w, 0, &mix_main);
+        mix_req = mix_main;
+        mix_seq_audio = mix_seq;
+        body_g = body_a = -1.0f;
+    }
     ch_control_init(&ctl, (float)VM_FS, VM_CTRL, 1.0f);   /* HumanVoice::new: the neutral posture, at rest */
     src = ctl.source;
     src.f0 = SPEECH_F0;
@@ -626,7 +648,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
 {
     uint32_t i, t0, c0;
     int s;
-    float gain = (float)master_q12 / 4096.0f * 8300000.0f * BODY_GAIN[body_audio];   /* MASTER, read once a block */
+    float gain = (float)master_q12 / 4096.0f * 8300000.0f * body_gain_audio;   /* MASTER, read once a block */
     int on2;
     midi_in();
     beat_blocks++;
@@ -634,7 +656,8 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
     vp_take();
     beat_take();
     cm_take();
-    if (body_req != body_audio || (body_req == BODY_SEAL && cre_req != cre_audio)) {   /* another body (CHIMERA's set_body): its anatomy, the waveguide anew. Here, as
+    if (body_req != body_audio || (body_req == BODY_SEAL && cre_req != cre_audio)
+        || (body_req != BODY_SEAL && mix_seq != mix_seq_audio)) {   /* another body (or blend) (CHIMERA's set_body): its anatomy, the waveguide anew. Here, as
                                               * the block starts, the second core is idle; this block's shapes were the
                                               * old body's, so it renders none; the sound fades back in (gain_now) */
         int s2;
@@ -642,6 +665,7 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
         seal_audio = body_audio == BODY_SEAL;
         bird_audio = 0;
         cre_div = 1;
+        body_gain_audio = 1.0f;               /* (a creature's level is its output gain) */
         if (seal_audio) {                     /* the Bestiary: its creature's voice anew */
             cre_audio = cre_req;
             ch_cvoice_init(&cvoice, CRE_DEF[cre_audio]);
@@ -683,11 +707,17 @@ void app_render(int32_t *lr, uint32_t n, uint32_t master_q12)
             gain_now = 0.0f;
             goto switched;
         }
-        body_tract_setup(&tract, body_audio);
-        ctl.k = CH_BODIES[body_audio].scale;
-        ch_tract_apply(&tract, ctl.x, 0.0f);
-        ch_wave_init(&wave, (float)VM_FS, VM_CTRL, tract.k, tract.lip_s);
-        wave.fade = BODY_FADE[body_audio];
+        {   /* the body the main loop holds (a blend: its dimensions, loss and level between the bodies') */
+            static bodymix_t m;
+            mix_seq_audio = mix_seq;
+            m = mix_req;
+            body_tract_setup(&tract, &m.b);
+            ctl.k = m.b.scale;
+            ch_tract_apply(&tract, ctl.x, 0.0f);
+            ch_wave_init(&wave, (float)VM_FS, VM_CTRL, tract.k, tract.lip_s);
+            wave.fade = m.fade;
+            body_gain_audio = m.gain;
+        }
         for (s2 = 0; s2 < NSUB; s2++)
             steps[cur][s2].has_shape = 0;
         gain_now = 0.0f;
@@ -1086,6 +1116,8 @@ enum {
     K_GLIDE, K_SPEED, K_FALSE, K_BODY,        /* 5 PLAY: K4 is Bright from 0.5.0 (the page table); Body on ALGORITHM */
     K_BRIGHT,                                 /* (the order is the saved presets': kept) */
     K_FRONT, K_OPEN,                          /* VOWEL (with K_VELUM as Nasal, K_ROUND as Rounding) */
+    K_GENDER, K_AGE,                          /* the body's blend (1.0.0, SEL held + PRESET / SELECT: CHIMERA's BodyMix) */
+    K_TBX, K_TBY, K_TTX, K_TTY,               /* TONGUE (1.0.0, ARP): the tongue body and tip placed (cm) */
     NK
 };
 enum { F_PCT, F_CM, F_SCM, F_CENTS, F_HZ, F_MS, F_X, F_VELUM, F_BODY, F_F2, F_F1 };
@@ -1107,14 +1139,23 @@ static const knob_t KNOB[NK] = {
     {"F.FOLDS", 0, 1, 0, 0.02f, F_PCT, 0},   {"BODY", 0, 2, 0, 1, F_BODY, 0},
     {"BRIGHT", 0, 1, 0.25f, 0.02f, F_PCT, 0},
     {"FRONT", 0, 1, 0.45f, 0.02f, F_F2, 0},  {"OPEN", 0, 1, 0.35f, 0.02f, F_F1, 0},
+    {"GENDER", 0, 1, 0, 0.05f, F_PCT, 0},    {"AGE", 0, 1, 0, 0.05f, F_PCT, 0},
+    /* (the tongue: CHIMERA's neutral the start; the ranges a little past where its English puts it: the body
+     * 1.25-3.8 cm front, 5.7-8.5 high, the tip 5.35-6.85 forward, 8.2-10 up) */
+    {"FORWARD", 1.0f, 4.2f, 2.9f, 0.05f, F_CM, 0}, {"HEIGHT", 5.3f, 8.8f, 6.85f, 0.05f, F_CM, 0},
+    {"TIP FWD", 5.0f, 7.3f, 6.45f, 0.05f, F_CM, 0}, {"TIP UP", 7.0f, 10.4f, 7.3f, 0.05f, F_CM, 0},
 };
-#define NPAGES 6
+#define NPAGES 7
 #define PAGE_VOWEL 5
+#define PAGE_TONGUE 6
 static const uint8_t PAGE[NPAGES][4] = {
     {K_VIB, K_RATE, K_BREATHY, K_RING}, {K_JAW, K_LIPS, K_LARYNX, K_VELUM}, {K_ROUND, K_PROT, K_ROOT, K_CURL},
     {K_BREATH, K_PRESSED, K_ROUGH, K_FRY}, {K_GLIDE, K_SPEED, K_FALSE, K_BRIGHT}, {K_FRONT, K_OPEN, K_VELUM, K_ROUND},
+    {K_TBX, K_TBY, K_TTX, K_TTY},
 };
-static const char *const PAGE_NAME[NPAGES] = {"SING", "SHAPE", "MOUTH", "SOURCE", "PLAY", "VOWEL"};
+static const char *const PAGE_NAME[NPAGES] = {"SING", "SHAPE", "MOUTH", "SOURCE", "PLAY", "VOWEL", "TONGUE"};
+/* the pages SELECT turns through in each mode: WORDS, VOWEL, TONGUE (its own first, then the mouth's, then the voice's) */
+static const uint8_t PAGES_W[] = {0, 1, 2, 3, 4}, PAGES_V[] = {0, 1, 2, 3, 4, 5}, PAGES_T[] = {6, 1, 2, 3, 0, 4};
 /* the vowel pad's formant ranges (the adult male's: CHIMERA's VowelMap), log scales; FRONT 0 is the front (F2 high) */
 #define PAD_F1_LO 230.0f
 #define PAD_F1_HI 950.0f
@@ -1122,12 +1163,15 @@ static const char *const PAGE_NAME[NPAGES] = {"SING", "SHAPE", "MOUTH", "SOURCE"
 #define PAD_F2_HI 2700.0f
 /* (a female's or a child's vowels sit higher: the ranges scale by the body's calibrated vowels, so a place on the pad,
  * and a snapshot, is the same vowel in any body) */
-static float pad_f1(float open) { return CH_BODIES[body_hum].pad_f1 * PAD_F1_LO * fm_exp2f(open * fm_log2f(PAD_F1_HI / PAD_F1_LO)); }
-static float pad_f2(float front) { return CH_BODIES[body_hum].pad_f2 * PAD_F2_HI * fm_exp2f(-front * fm_log2f(PAD_F2_HI / PAD_F2_LO)); }
+static float pad_f1(float open) { return mix_main.b.pad_f1 * PAD_F1_LO * fm_exp2f(open * fm_log2f(PAD_F1_HI / PAD_F1_LO)); }
+static float pad_f2(float front) { return mix_main.b.pad_f2 * PAD_F2_HI * fm_exp2f(-front * fm_log2f(PAD_F2_HI / PAD_F2_LO)); }
 
 /* the voice presets (this firmware's own: CHIMERA has none) and the vowel snapshots, as the store keeps them */
 #define NSNAP 12
-#define PRESETS_MAGIC 0x43485031u             /* "CHP1" */
+#define PRESETS_MAGIC 0x43485032u             /* "CHP2" (1.0.0: the body's blend and the tongue's place added; "CHP1"'s
+                                               * presets are carried over, their body as its blend) */
+#define PRESETS_MAGIC1 0x43485031u
+#define NK1 23                                /* (CHP1's knobs: up to K_OPEN) */
 typedef struct {
     uint32_t magic;
     float v[NPRESETS][NK];
@@ -1180,11 +1224,32 @@ static void snap_factory(void)
 
 static void presets_load(void)
 {
-    int i;
+    int i, n;
     for (i = 0; i < NK; i++)                  /* the knobs a preset leaves (the vowel pad's place) start at theirs */
         kv[i] = KNOB[i].def;
-    if (plat_store_load(OBJ_PRESETS, &presets, sizeof presets) == (int)sizeof presets && presets.magic == PRESETS_MAGIC)
+    n = plat_store_load(OBJ_PRESETS, &presets, sizeof presets);
+    if (n == (int)sizeof presets && presets.magic == PRESETS_MAGIC)
         return;
+    if (n == (int)(4 + NPRESETS * NK1 * 4 + NSNAP * 4 * 4) && presets.magic == PRESETS_MAGIC1) {   /* 0.2.0-0.9.0's */
+        static float old[NPRESETS * NK1 + NSNAP * 4 + 1];
+        int k;
+        plat_store_load(OBJ_PRESETS, old, sizeof old);
+        presets.magic = PRESETS_MAGIC;
+        for (i = 0; i < NPRESETS; i++) {
+            const float *v = old + 1 + i * NK1;
+            int b;
+            preset_factory(i, presets.v[i]);
+            for (k = 0; k < NK1; k++)
+                presets.v[i][k] = v[k];
+            b = (int)(v[K_BODY] + 0.5f);
+            presets.v[i][K_GENDER] = b == 1 ? 1.0f : 0.0f;
+            presets.v[i][K_AGE] = b == 2 ? 1.0f : 0.0f;
+        }
+        for (i = 0; i < NSNAP; i++)
+            for (k = 0; k < 4; k++)
+                presets.snap[i][k] = old[1 + NPRESETS * NK1 + i * 4 + k];
+        return;
+    }
     presets.magic = PRESETS_MAGIC;
     for (i = 0; i < NPRESETS; i++)
         preset_factory(i, presets.v[i]);
@@ -1197,6 +1262,7 @@ typedef struct {
     ch_source_t src;
     float target[CH_NARTIC];
     float gate;
+    uint8_t tip_held;                         /* TONGUE: the tip where its knobs put it (else it rests behind the teeth) */
 } vparams_t;
 static vparams_t vp_out;
 static volatile uint8_t vp_dirty;
@@ -1223,7 +1289,7 @@ static void vp_send(void)
                                      : vowel_mode ? ctl.source.f0 : SPEECH_F0;
     for (k = 0; k < CH_NARTIC; k++)
         p.target[k] = CH_NEUTRAL[k];
-    if (vowel_mode)                           /* the vowel pad: the tongue, the jaw, the lips, the root, the larynx */
+    if (vowel_mode == 1)                      /* the vowel pad: the tongue, the jaw, the lips, the root, the larynx */
         ch_vowel_pad(pad_f1(kv[K_OPEN]), pad_f2(kv[K_FRONT]), p.target);
     else {
         p.target[CH_JAW] = kv[K_JAW];
@@ -1232,6 +1298,14 @@ static void vp_send(void)
         p.target[CH_LIP_PROT] = kv[K_PROT];
         p.target[CH_ROOT] = kv[K_ROOT];
         p.target[CH_TT_CURL] = kv[K_CURL];
+    }
+    p.tip_held = vowel_mode == 2;
+    if (p.tip_held) {                         /* TONGUE: the body and the tip where the knobs put them (CHIMERA's drag:
+                                               * the anatomy keeps them out of the palate) */
+        p.target[CH_TB_X] = kv[K_TBX];
+        p.target[CH_TB_Y] = kv[K_TBY];
+        p.target[CH_TT_X] = kv[K_TTX];
+        p.target[CH_TT_Y] = kv[K_TTY];
     }
     p.target[CH_LIP_WIDTH] = 1.0f - kv[K_ROUND];
     p.target[CH_VELUM] = kv[K_VELUM];
@@ -1263,8 +1337,9 @@ static void vp_take(void)
     if (!vp_dirty)
         return;
     ch_control_set_source(&ctl, &vp_out.src);
+    ctl.tip_free = (uint8_t)!vp_out.tip_held;
     for (k = 0; k < CH_NARTIC; k++)
-        if (k != CH_TT_X && k != CH_TT_Y)     /* (the tip rests behind the teeth: rest_tip sets those) */
+        if (vp_out.tip_held || (k != CH_TT_X && k != CH_TT_Y))   /* (resting, rest_tip sets the tip behind the teeth) */
             ctl.target[k] = vp_out.target[k];
     ch_control_set_gate(&ctl, vp_out.gate);
     vp_dirty = 0;
@@ -1283,12 +1358,12 @@ static void mode_set(uint8_t v)
         live.sounding = 0;
         live.n_keys = 0;
         mb_post();
-        page = PAGE_VOWEL;
-    } else if (page == PAGE_VOWEL) {
+        page = v == 2 ? PAGE_TONGUE : PAGE_VOWEL;
+    } else if (page == PAGE_VOWEL || page == PAGE_TONGUE) {
         page = 0;
     }
     vp_send();
-    app_say(v ? "VOWEL" : "WORDS", v ? "KEYS PLAY PITCH" : "KEYS SING");
+    app_say(v == 2 ? "TONGUE" : v ? "VOWEL" : "WORDS", v ? "KEYS PLAY PITCH" : "KEYS SING");
 }
 
 /* VOWEL: the keys play pitch (the last key held), the breath on while one is down, at its velocity's level (CHIMERA's
@@ -1377,26 +1452,99 @@ static void knob_text(int id, char *b)
  * the audio's anatomy at its next block (app_render) */
 static void home_body(void);
 static void seal_mode_changed(void);
+static uint8_t blend_buf[12288] PLAT_POOL;   /* the blended phoneme and vowel tables (ch_speech_blend; ~8 KB) */
+
+/* the three bodies' weights for gender g and age a (CHIMERA's BodyMix::weights), and the nearest */
+static int body_weights(float g, float a, float w[3])
+{
+    int b, near = 0;
+    w[0] = (1.0f - a) * (1.0f - g);
+    w[1] = (1.0f - a) * g;
+    w[2] = a;
+    for (b = 1; b < 3; b++)
+        if (w[b] > w[near])
+            near = b;
+    return near;
+}
+
+static void body_mix(const float w[3], int near, bodymix_t *m)
+{
+    int b;
+    float lf0 = 0, lp1 = 0, lp2 = 0;
+    m->b = CH_BODIES[near];                   /* (its name and its airway's indices) */
+    m->b.scale = m->b.pharynx = m->b.tongue_radius = m->b.lip_width = 0;
+    m->fade = m->gain = 0;
+    for (b = 0; b < NBODIES; b++) {
+        const ch_body_t *d = &CH_BODIES[b];
+        m->b.scale += w[b] * d->scale;
+        m->b.pharynx += w[b] * d->pharynx;
+        m->b.tongue_radius += w[b] * d->tongue_radius;
+        m->b.lip_width += w[b] * d->lip_width;
+        lf0 += w[b] * fm_log2f(d->f0);
+        lp1 += w[b] * fm_log2f(d->pad_f1);
+        lp2 += w[b] * fm_log2f(d->pad_f2);
+        m->fade += w[b] * BODY_FADE[b];
+        m->gain += w[b] * BODY_GAIN[b];
+    }
+    m->b.f0 = fm_exp2f(lf0);
+    m->b.pad_f1 = fm_exp2f(lp1);
+    m->b.pad_f2 = fm_exp2f(lp2);
+    if (w[near] >= 1.0f) {                    /* a body whole: its own numbers exactly (as before 1.0.0) */
+        m->b = CH_BODIES[near];
+        m->fade = BODY_FADE[near];
+        m->gain = BODY_GAIN[near];
+    }
+}
+
+/* the blend as the screen shows it: a body's name when it is one whole, else the shares there are ("M 40  F 30  C 30") */
+static void body_label(float g, float a, char *t)
+{
+    float w[3];
+    static const char *const L[3] = {"M ", "F ", "C "};
+    int b, near = body_weights(g, a, w);
+    t[0] = 0;
+    if (w[near] > 0.995f) {
+        text_cat(t, CH_BODIES[near].name);
+        return;
+    }
+    for (b = 0; b < 3; b++) {                 /* (the shares there are) */
+        char d[6];
+        if (w[b] < 0.005f)
+            continue;
+        if (t[0])
+            text_cat(t, "  ");
+        text_cat(t, L[b]);
+        int_text((int32_t)(w[b] * 100.0f + 0.5f), d);
+        text_cat(t, d);
+    }
+}
+
 static void body_apply(void)
 {
-    int b = (int)(kv[K_BODY] + 0.5f);
-    if (b < 0 || b >= NBODIES)
-        b = 0;
-    if (b == body_cur)
+    const float g = fm_clampf(kv[K_GENDER], 0, 1), a = fm_clampf(kv[K_AGE], 0, 1);
+    float w[3];
+    const int b = body_weights(g, a, w);
+    if (b == body_cur && g == body_g && a == body_a)
         return;
     body_cur = (uint8_t)b;
-    body_hum = (uint8_t)b;                    /* a human: its tables and its head */
-    ch_speech_body(b);
+    body_hum = (uint8_t)b;                    /* a human: the nearest body's (the tunes' octave) */
+    body_g = g;
+    body_a = a;
+    kv[K_BODY] = (float)b;
+    body_mix(w, b, &mix_main);
+    ch_speech_blend(w, blend_buf, (int)sizeof blend_buf);   /* its tables (a body whole: its own) */
     home_body();
     seal_mode_changed();
+    mix_req = mix_main;                       /* the audio's anatomy at its next block */
+    mix_seq++;
     body_req = (uint8_t)b;
 }
 
 static void preset_apply(int i)
 {
     int k;
-    for (k = 0; k < NK; k++)                  /* (the vowel pad's place is played, not the voice's: it stays) */
-        if (k != K_FRONT && k != K_OPEN)
+    for (k = 0; k < NK; k++)                  /* (the vowel pad's and the tongue's places are played, not the voice's) */
+        if (k != K_FRONT && k != K_OPEN && k != K_TBX && k != K_TBY && k != K_TTX && k != K_TTY)
             kv[k] = fm_clampf(presets.v[i][k], KNOB[k].min, KNOB[k].max);
     set.preset = (uint8_t)i;
     body_apply();                             /* (a preset carries its body) */
@@ -2034,10 +2182,34 @@ static void ed_input(uint32_t keys, uint32_t btn, uint32_t now)
     }
 }
 
-static void body_settle(uint32_t now)          /* ALGORITHM at rest: the body switches */
+static uint8_t blend_pending;                 /* SEL held + PRESET / SELECT turned: the blend switches when they rest */
+static uint32_t blend_turned_at;
+
+static void blend_turn(int id, int32_t e)    /* gender or age, in 5 % steps */
 {
+    char t[24];
+    float v = kv[id] + 0.05f * (float)e;
+    v = (float)(int32_t)(v * 20.0f + (v >= 0 ? 0.5f : -0.5f)) / 20.0f;
+    kv[id] = fm_clampf(v, 0, 1);
+    blend_pending = 1;
+    blend_turned_at = plat_ms();
+    body_label(kv[K_GENDER], kv[K_AGE], t);
+    app_say(id == K_GENDER ? "GENDER" : "AGE", t);
+}
+
+static void body_settle(uint32_t now)          /* ALGORITHM at rest: the body switches; a blend likewise */
+{
+    if (blend_pending && now - blend_turned_at >= 400u) {
+        blend_pending = 0;
+        set_dirty = 1;
+        body_apply();
+        vp_send();
+        ui.redraw = 1;
+    }
     if (body_pending >= 0 && now - body_turned_at >= 400u) {
         kv[K_BODY] = (float)body_pending;
+        kv[K_GENDER] = body_pending == 1 ? 1.0f : 0.0f;   /* (a body whole: CHIMERA's presets' sliders) */
+        kv[K_AGE] = body_pending == 2 ? 1.0f : 0.0f;
         body_pending = -1;
         set_dirty = 1;
         body_apply();
@@ -2798,7 +2970,8 @@ static void input(void)
     static uint32_t snap_at;
     uint32_t keys, btn = plat_buttons(), k, now = plat_ms();
     int32_t e;
-    const int fx_held = (int)(btn >> B_FX & 1u), home_held = (int)(btn >> B_HOME & 1u);
+    static uint8_t sel_used;                 /* SEL held for the blend: its release does not turn the page */
+    const int fx_held = (int)(btn >> B_FX & 1u), home_held = (int)(btn >> B_HOME & 1u), sel_held = (int)(btn >> B_SEL & 1u);
     nq_run();                                /* MIDI in's notes, planned here */
     mb_post();                               /* what is pending, if the mailbox has been emptied */
     touch_poll();                            /* the sensed keys' presses, velocities and pressure */
@@ -2866,11 +3039,21 @@ static void input(void)
         app_say(nm, "STORED");
         snap_key = -1;
     }
-    if ((ui.btn >> B_FX & 1u) && !fx_held) { /* FX released: alone, it switches WORDS <-> VOWEL */
+    if ((ui.btn >> B_FX & 1u) && !fx_held) { /* FX released: alone, it switches WORDS <-> VOWEL (TONGUE -> VOWEL) */
         if (!fx_used && body_cur != BODY_SEAL)
-            mode_set((uint8_t)!vowel_mode);
+            mode_set(vowel_mode == 1 ? 0 : 1);
         fx_used = 0;
         snap_key = -1;
+    }
+    if ((ui.btn >> B_SEL & 1u) && !sel_held) {   /* SEL released: alone, the next page (held, it blended the body) */
+        if (!sel_used && body_cur != BODY_SEAL) {
+            if (vowel_mode == 2)             /* TONGUE: its page, SHAPE, MOUTH */
+                page = (uint8_t)(page == PAGE_TONGUE ? 1 : page == 1 ? 2 : PAGE_TONGUE);
+            else                             /* pages 2-5 (EDIT until 0.5.0) */
+                page = (uint8_t)(page >= 1 && page < 4 ? page + 1 : 1);
+            app_say(PAGE_NAME[page], "");
+        }
+        sel_used = 0;
     }
     for (k = 0; k < NB; k++) {               /* a button pressed: what it does here */
         uint32_t bit = 1u << k;
@@ -2889,9 +3072,13 @@ static void input(void)
         } else if (k == B_SEL && body_cur == BODY_SEAL) {   /* the seal's two pages */
             seal_page ^= 1u;
             seal_page_say();
-        } else if (k == B_SEL) {                 /* pages 2-5 (EDIT until 0.5.0) */
-            page = (uint8_t)(page >= 1 && page < 4 ? page + 1 : 1);
-            app_say(PAGE_NAME[page], "");
+        } else if (k == B_SEL) {                 /* (the page on its release: held, PRESET and SELECT blend the body) */
+            sel_used = 0;
+        } else if (k == B_ARP) {                 /* TONGUE (1.0.0): the tongue placed by hand, and back to WORDS */
+            if (body_cur == BODY_SEAL)
+                app_say("TONGUE", "LFO: BACK TO HUMAN");
+            else
+                mode_set(vowel_mode == 2 ? 0 : 2);
         } else if (k == B_EDIT) {                /* the word editor, on the slot sung (from the next input) */
             ed_open();
         } else if (k == B_ENV) {                 /* CHIMERA's tunes (0.8.0): a human body's */
@@ -2956,9 +3143,17 @@ static void input(void)
         } else if (k == EN_SELECT && body_cur == BODY_SEAL) {
             seal_page ^= 1u;                     /* (either way: two pages) */
             seal_page_say();
-        } else if (k == EN_SELECT) {             /* the page (VOWEL's in VOWEL mode) */
-            const int n = vowel_mode ? NPAGES : NPAGES - 1;
-            page = (uint8_t)((((int)page + e) % n + n) % n);
+        } else if (sel_held && body_cur != BODY_SEAL && (k == EN_PRESET || k == EN_SELECT)) {   /* the body's blend */
+            sel_used = 1;
+            blend_turn(k == EN_PRESET ? K_GENDER : K_AGE, e);
+        } else if (k == EN_SELECT) {             /* the page (VOWEL's in VOWEL mode, TONGUE's in TONGUE) */
+            const uint8_t *o = vowel_mode == 2 ? PAGES_T : vowel_mode ? PAGES_V : PAGES_W;
+            const int n = vowel_mode == 2 ? (int)sizeof PAGES_T : vowel_mode ? (int)sizeof PAGES_V : (int)sizeof PAGES_W;
+            int i, at = 0;
+            for (i = 0; i < n; i++)
+                if (o[i] == page)
+                    at = i;
+            page = o[((at + (int)e) % n + n) % n];
             app_say(PAGE_NAME[page], "");
         } else if (k == EN_ALGO) {               /* Body, always (male only for now) */
             knob_turn(K_BODY, e);
@@ -3007,7 +3202,8 @@ static void input(void)
     ui.keys = keys;
     ui.btn = btn;
     plat_glow(1);                            /* the unlit buttons glow, readable in the dark */
-    plat_leds(btn | (set_dirty ? 1u << B_SAVE : 0u) | (vowel_mode ? 1u << B_FX : 0u) | (body_cur == BODY_SEAL ? 1u << B_LFO : 0u),
+    plat_leds(btn | (set_dirty ? 1u << B_SAVE : 0u) | (vowel_mode == 1 ? 1u << B_FX : 0u) | (vowel_mode == 2 ? 1u << B_ARP : 0u)
+                  | (body_cur == BODY_SEAL ? 1u << B_LFO : 0u),
               keys | midi_keys(set.octave));     /* the keys pressed, and the notes MIDI in plays */
 }
 
@@ -3203,7 +3399,7 @@ static uint8_t head_ready;
 
 static void home_body(void)                  /* the drawn head's anatomy: the body's */
 {
-    body_tract_setup(&dtract, body_hum);
+    body_tract_setup(&dtract, &mix_main.b);
     dtract.draw = 1;
     head_ready = 0;
     ui.redraw = 1;
@@ -3276,13 +3472,13 @@ static void draw_home(void)
     } else {                                 /* the page (or VOWEL), the preset; the note while one sounds */
         char pg[16] = "";
         text_cat(pg, PAGE_NAME[page]);
-        if (page != PAGE_VOWEL) {
+        if (page != PAGE_VOWEL && page != PAGE_TONGUE) {
             char d[4] = {' ', (char)('1' + page), '/', 0};
             text_cat(pg, d);
             text_cat(pg, "5");
         }
         x = cv_text(8, 7, &FONT_XS, pg, V_BLUE);
-        cv_text(x + 10, 7, &FONT_XS, vowel_mode ? "VOWEL MODE" : "WORDS", V_BLUE_DIM);
+        cv_text(x + 10, 7, &FONT_XS, vowel_mode == 2 ? "TONGUE MODE" : vowel_mode ? "VOWEL MODE" : "WORDS", V_BLUE_DIM);
         if (note >= 0) {
             note_name(note, t);
             cv_text(232 - text_w(&FONT_B, t), 4, &FONT_B, t, V_BLUE);
@@ -3292,8 +3488,12 @@ static void draw_home(void)
             text_cat(pn, PRESET_NAME[set.preset]);
             px = 232 - text_w(&FONT_XS, pn);
             cv_text(px, 7, &FONT_XS, pn, V_BLUE_MID);
-            /* the body (ALGORITHM), before the preset */
-            cv_text(px - 8 - text_w(&FONT_XS, body_name(body_cur)), 7, &FONT_XS, body_name(body_cur), V_BLUE_DIM);
+            /* the body (ALGORITHM, or its blend), before the preset */
+            {
+                char bl[24];
+                body_label(body_g < 0 ? 0 : body_g, body_a < 0 ? 0 : body_a, bl);
+                cv_text(px - 8 - text_w(&FONT_XS, bl), 7, &FONT_XS, bl, V_BLUE_DIM);
+            }
         }
     }
     cv_rect(8, HOME_TOP - 1, 224, 1, RGB(0x13, 0x39, 0x54));
@@ -3306,6 +3506,15 @@ static void draw_home(void)
         cv_begin(240, HOME_HEAD_H / 2, C_BLACK);
         if (head_ready)
             draw_head(y0);
+        if (vowel_mode == 2) {               /* TONGUE: where the tongue is put, the vowel nearest */
+            cv_text(126, HOME_TOP + 8 - y0, &FONT_XS, "TONGUE", V_BLUE_MID);
+            cv_text(126, HOME_TOP + 22 - y0, &FONT_L, ch_vowel_name(drawn_x), note >= 0 ? V_WHITE : V_BLUE);
+            cv_text(126, HOME_TOP + 66 - y0, &FONT_XS, "K1-K2 BODY  K3-K4 TIP", V_BLUE);
+            cv_text(126, HOME_TOP + 112 - y0, &FONT_XS, "SEL: SHAPE, MOUTH", V_BLUE_MID);
+            cv_text(126, HOME_TOP + 126 - y0, &FONT_XS, "ARP: BACK TO WORDS", V_BLUE_DIM);
+            cv_blit(0, (uint32_t)y0);
+            continue;
+        }
         if (vowel_mode) {                    /* the vowel made now, its formants, the snapshots' hint */
             char f[24] = "F1 ", d[8];
             cv_text(126, HOME_TOP + 8 - y0, &FONT_XS, "VOWEL", V_BLUE_MID);
@@ -4054,6 +4263,21 @@ int app_expect(const char *what, int *got)
         *got = set.kb;
     else if (!strcmp(what, "slot"))
         *got = set.slot;
+    else if (!strcmp(what, "gender"))        /* the blend (x100): its gender, its age; the audio's anatomy's scale (x1000) */
+        *got = (int)(kv[K_GENDER] * 100.0f + 0.5f);
+    else if (!strcmp(what, "age"))
+        *got = (int)(kv[K_AGE] * 100.0f + 0.5f);
+    else if (!strcmp(what, "bodyk"))
+        *got = (int)(tract.k * 1000.0f + 0.5f);
+    else if (!strcmp(what, "f0x"))           /* the speaking pitch (Hz) */
+        *got = (int)(SPEECH_F0 + 0.5f);
+    else if (!strcmp(what, "vmode"))         /* 0 WORDS, 1 VOWEL, 2 TONGUE; the tip held (TONGUE), the tongue body's
+                                              * target forward (cm x100) */
+        *got = vowel_mode;
+    else if (!strcmp(what, "tipheld"))
+        *got = !ctl.tip_free;
+    else if (!strcmp(what, "tbx"))
+        *got = (int)(ctl.target[CH_TB_X] * 100.0f + 0.5f);
     else if (!strcmp(what, "page"))
         *got = page;
     else if (!strcmp(what, "glo"))           /* the debug page shown */

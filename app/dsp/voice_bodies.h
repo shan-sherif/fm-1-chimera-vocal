@@ -21,10 +21,10 @@ static const ch_body_t CH_BODIES[NBODIES] = {
     {"CHILD", 0.74f, 0.8f, 2.15f, 4.0f, 250.0f, 1.2714f, 1.316f, 10, 10, 9, 18, 16, 32, 34},
 };
 
-/* the anatomy's settings for body b (ch_tract_init): all the waveguide (ch_wave.c) needs */
-static void body_tract_setup(ch_tract_t *t, int b)
+/* the anatomy's settings for body d (ch_tract_init): all the waveguide (ch_wave.c) needs. d: one of CH_BODIES, or a
+ * blend of them (the app's: CHIMERA's BodyMix, the airway's indices the nearest body's) */
+static void body_tract_setup(ch_tract_t *t, const ch_body_t *d)
 {
-    const ch_body_t *d = &CH_BODIES[b];
     t->fs = 44100.0f; t->n_ph = 8; t->n_or = 8; t->dx_stable = 0.8181966944853543f;
     t->tr_branch = 0; t->tr_n = d->tr_n; t->ph_first = d->ph_first; t->ph_branch = d->ph_branch;
     t->or_first = d->or_first; t->or_branch = d->or_branch; t->glottis_port = d->glottis_port; t->velum_port = d->velum_port;

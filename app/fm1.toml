@@ -1,6 +1,6 @@
 # Build settings (fm1-base tools/build.py). Started from fm1-base's template.
 name = "CHIMERA"               # the build's file names (chimera-X.Y.Z.fwsc); APP_NAME is in app.h. The pages say "FM-1 Chimera Vocal"
-version = "0.9.0"             # the release: the site (GitHub Pages, on a push to main), the package, the boot screen
+version = "1.0.0"             # the release: the site (GitHub Pages, on a push to main), the package, the boot screen
 id_prefix = "FM-1_042"         # package identity, the same number for every version: the plain identity (what
                                # M-UPGRADE and the plain handshake read) is always FM-1_042; dev builds are FM-1_04200,
                                # releases FM-1_042XXYYZZ (the version, for the installer's check after an install)
@@ -21,7 +21,7 @@ licence = "MPL-2.0 AND MIT"   # fm1-base's and the template's files MPL-2.0, CHI
 credits = "A port of CHIMERA by Jameson Hodge (MIT, github.com/jamesondh/chimera-vocal-synth), on fm1-base by Charles Vestal and felucca-bsp by Leo Kuroshita (MPL-2.0)."
 # firmware.json, for firmware hubs (fm1-base docs/FIRMWARE-JSON.md)
 author = "shan-sherif"
-description = "A simulated human voice: lungs, vocal folds, throat, mouth and nose, ported from Jameson Hodge's CHIMERA vocal synthesizer. Type words and the keys sing them a syllable at a time or sing them on CHIMERA's tunes, play vowels and shape the mouth with the knobs, beatbox with CHIMERA's drum sounds and step sequencer, or play its Bestiary's seal, songbird, alligator and elephant. Unofficial; not affiliated with M-VAVE or with CHIMERA's author."
+description = "A simulated human voice: lungs, vocal folds, throat, mouth and nose, ported from Jameson Hodge's CHIMERA vocal synthesizer. Type words and the keys sing them a syllable at a time or sing them on CHIMERA's tunes, play vowels and shape the mouth and tongue with the knobs, blend the male, female and child bodies, beatbox with CHIMERA's drum sounds and step sequencer, or play its Bestiary's seal, songbird, alligator and elephant. Unofficial; not affiliated with M-VAVE or with CHIMERA's author."
 tags = ["synth", "experimental"]
 install = "https://shan-sherif.github.io/fm-1-chimera-vocal/install/"
 site = "https://shan-sherif.github.io/fm-1-chimera-vocal/"

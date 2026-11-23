@@ -72,10 +72,10 @@ def main(paths):
             int(h[10]), int(h[11]), int(h[12]), int(h[14]), int(h[15]), int(h[17]), int(h[18])))
     w("};\n")
     c = common
-    w("""/* the anatomy's settings for body b (ch_tract_init): all the waveguide (ch_wave.c) needs */
-static void body_tract_setup(ch_tract_t *t, int b)
+    w("""/* the anatomy's settings for body d (ch_tract_init): all the waveguide (ch_wave.c) needs. d: one of CH_BODIES, or a
+ * blend of them (the app's: CHIMERA's BodyMix, the airway's indices the nearest body's) */
+static void body_tract_setup(ch_tract_t *t, const ch_body_t *d)
 {
-    const ch_body_t *d = &CH_BODIES[b];
     t->fs = %s; t->n_ph = %d; t->n_or = %d; t->dx_stable = %s;
     t->tr_branch = %d; t->tr_n = d->tr_n; t->ph_first = d->ph_first; t->ph_branch = d->ph_branch;
     t->or_first = d->or_first; t->or_branch = d->or_branch; t->glottis_port = d->glottis_port; t->velum_port = d->velum_port;

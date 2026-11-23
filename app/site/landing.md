@@ -8,7 +8,7 @@ mouth and nose, simulated. How the voice works is his. This firmware only adapts
 
 This is version {{VERSION}} of FM-1 Chimera Vocal. The FM-1 sings words: each key sings the next syllable of a line, at the key's pitch, and
 PLAY speaks the line. ALGORITHM chooses CHIMERA's male, female or child body, each with its own airway and its own
-vowels. The screen is CHIMERA's flat view, the head moving as it sings. Every sound comes from the
+vowels, and SEL held with PRESET and SELECT blends them (gender and age). ARP places the tongue by hand. The screen is CHIMERA's flat view, the head moving as it sings. Every sound comes from the
 simulated airway, not from samples. It sings whole lines by itself on CHIMERA's tunes (ENV). The same mouth beatboxes (SEQ: CHIMERA's ten drum sounds, its beats and a step
 sequencer), and LFO swaps it for a seal's, a songbird's, an alligator's or an elephant's, from CHIMERA's Bestiary.
 
