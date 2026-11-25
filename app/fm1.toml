@@ -1,6 +1,6 @@
 # Build settings (fm1-base tools/build.py). Started from fm1-base's template.
 name = "CHIMERA"               # the build's file names (chimera-X.Y.Z.fwsc); APP_NAME is in app.h. The pages say "FM-1 Chimera Vocal"
-version = "1.1.0"             # the release: the site (GitHub Pages, on a push to main), the package, the boot screen
+version = "1.1.1"             # the release: the site (GitHub Pages, on a push to main), the package, the boot screen
 id_prefix = "FM-1_042"         # package identity, the same number for every version: the plain identity (what
                                # M-UPGRADE and the plain handshake read) is always FM-1_042; dev builds are FM-1_04200,
                                # releases FM-1_042XXYYZZ (the version, for the installer's check after an install)

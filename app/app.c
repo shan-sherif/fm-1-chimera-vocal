@@ -101,7 +101,8 @@ static int two_cores;
  * speaks (0.0.5: 210 %), every 4th fits (0.0.7 onwards: under 70 % at peak). A faster anatomy could try 2 here (the lab
  * measures any: replay --anat-every=N) */
 #define ANAT_EVERY 4
-static volatile uint8_t anat_every = ANAT_EVERY;   /* (the debug page's K1 tries 4, 2 or 1 until power-off: 0.8.0) */
+static volatile uint8_t anat_every = ANAT_EVERY;   /* (the debug page's K1 tries 2, 4 or 8 until power-off: 0.8.0;
+                                                    * every step, 1, until 1.1.1: it overloads core 1) */
 /* the debug page's K2 (0.8.0, until power-off): the human voice's treble shelf, -7 dB over ~2.5 kHz (ch_wave.h), to
  * hear against the voice without it */
 static volatile uint8_t shelf_on;
@@ -2605,11 +2606,12 @@ static int debug_knob(uint32_t k, int32_t e)
     if (!page_debug)
         return 0;
     if (k == EN_K1) {
-        static const uint8_t R[3] = {4, 2, 1};
-        int i = anat_every == 4 ? 0 : anat_every == 2 ? 1 : 2;
-        i = ((i + (e > 0 ? 1 : -1)) % 3 + 3) % 3;
+        static const uint8_t R[3] = {2, 4, 8};   /* (every step, 1, overloads core 1: not offered from 1.1.1) */
+        int i = anat_every == 2 ? 0 : anat_every == 8 ? 2 : 1;
+        i += (int)e;                         /* (a detent a place, held at the ends) */
+        i = i < 0 ? 0 : i > 2 ? 2 : i;
         anat_every = R[i];
-        app_say("ANATOMY", anat_every == 1 ? "EVERY STEP" : anat_every == 2 ? "EVERY 2ND STEP" : "EVERY 4TH STEP");
+        app_say("ANATOMY", anat_every == 2 ? "EVERY 2ND STEP" : anat_every == 8 ? "EVERY 8TH STEP" : "EVERY 4TH STEP");
         return 1;
     }
     if (k == EN_K2) {
@@ -3357,7 +3359,7 @@ static void draw_debug(void)
                     w[i] = (char)(w[i] - 'a' + 'A');
             cv_text(100, 108, &FONT_XS, w, speaking || so ? V_WHITE : C_GRAY);
         }
-        {   /* K1 the anatomy's rate (every 4th, 2nd or every step), K2 the treble shelf */
+        {   /* K1 the anatomy's rate (every 2nd, 4th or 8th step), K2 the treble shelf */
             char e[32] = "ANATOMY ";
             char nb[4];
             int_text((int32_t)anat_every, nb);
@@ -4320,6 +4322,8 @@ int app_expect(const char *what, int *got)
         *got = (int)(ctl.target[CH_TB_X] * 100.0f + 0.5f);
     else if (!strcmp(what, "page"))
         *got = page;
+    else if (!strcmp(what, "anat"))          /* the anatomy's rate (control steps a run) */
+        *got = anat_every;
     else if (!strcmp(what, "glo"))           /* the debug page shown */
         *got = page_debug;
     else if (!strcmp(what, "shelf"))         /* the debug page's treble shelf */

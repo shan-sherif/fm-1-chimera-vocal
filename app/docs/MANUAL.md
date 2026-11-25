@@ -379,9 +379,10 @@ Bestiary's (the creature's pitch, its airway, its call): see their sections.
 | TWO CORES / ONE CORE | Whether the second core is running. If it fails, the voice continues on one core. |
 
 Anything under 100 % fits. The anatomy (the tongue, jaw and lip positions turned into the tract's shape) runs every
-4th control step, the tract gliding between. On the debug page **K1** tries it every 2nd step or every step, to hear
-and measure (from 0.8.0; back to every 4th at power-off): every 2nd peaks near 100 % of core 1 while it speaks, every
-step overloads it (XRUNS count up), and the difference is hard to hear.
+4th control step, the tract gliding between. On the debug page **K1** tries it every 2nd or every 8th step, to hear
+and measure (from 0.8.0; back to every 4th at power-off): every 2nd peaks near 100 % of core 1 while it speaks (84 %
+while it sings) and the difference is hard to hear; every 8th halves the anatomy's cost, the mouth's movements a
+little smoother. (Until 1.1.1 K1 also offered every step, which overloads core 1: XRUNS count up.)
 
 **K2** on the debug page (from 0.8.0, off again at power-off) turns on a treble shelf: the voice 7 dB quieter above
 about 2.5 kHz. Measured against CHIMERA's renders, the FM-1's voice is 3-9 dB brighter up there; the shelf brings it

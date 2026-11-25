@@ -225,7 +225,7 @@ from gitee, Emscripten, CHIMERA's dictionary at a fixed commit) and deploys it t
 
 The simulator's tests (`app/tests/`): `silence`, `rest`, `words`, `pages`, `screens`, `studio` (the Studio's SysEx),
 `edit` (the word editor), `bodies` (male, female, child), `blend` (BLENDED: SEL with PRESET and SELECT, the blend kept beside the other bodies and in a preset),
-`tongue` (TONGUE: the tongue placed, the tip held, its pages), `expression` (pressure, aftertouch, mod wheel, pitch bend),
+`tongue` (TONGUE: the tongue placed, the tip held, its pages), `anatomy` (the debug page's anatomy rates), `expression` (pressure, aftertouch, mod wheel, pitch bend),
 `crack` (no crack where a nasal ends a word),
 `beat` (the beatbox: pads, a beat, step editing, saving), `seal` (the Bestiary's seal: keys, calls, settings),
 `bird` (the Bestiary's songbird: keys, calls, settings), `beasts` (the alligator and the elephant: keys, calls, the
