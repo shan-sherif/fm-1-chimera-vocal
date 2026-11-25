@@ -71,7 +71,9 @@ static volatile uint8_t mix_seq;
 static uint8_t mix_seq_audio;
 static float body_gain_audio = 1.0f;
 static void body_mix(const float w[3], int near, bodymix_t *m);
+static void body_label(float g, float a, char *t);
 static float body_g = -1.0f, body_a = -1.0f;  /* main loop: the blend applied (-1: none yet) */
+#define BODY_BLENDED 3                         /* ALGORITHM's fourth body (kv[K_BODY]): GENDER and AGE's blend */
 static const char *body_name(int b) { return b >= 0 && b < NBODIES ? CH_BODIES[b].name : "SEAL"; }
 
 #define NSUB ((int)(APP_BLOCK / VM_CTRL))           /* control steps a block */
@@ -1116,7 +1118,7 @@ enum {
     K_GLIDE, K_SPEED, K_FALSE, K_BODY,        /* 5 PLAY: K4 is Bright from 0.5.0 (the page table); Body on ALGORITHM */
     K_BRIGHT,                                 /* (the order is the saved presets': kept) */
     K_FRONT, K_OPEN,                          /* VOWEL (with K_VELUM as Nasal, K_ROUND as Rounding) */
-    K_GENDER, K_AGE,                          /* the body's blend (1.0.0, SEL held + PRESET / SELECT: CHIMERA's BodyMix) */
+    K_GENDER, K_AGE,                          /* BLENDED's blend (1.0.0, SEL held + PRESET / SELECT: CHIMERA's BodyMix) */
     K_TBX, K_TBY, K_TTX, K_TTY,               /* TONGUE (1.0.0, ARP): the tongue body and tip placed (cm) */
     NK
 };
@@ -1136,10 +1138,10 @@ static const knob_t KNOB[NK] = {
     {"BREATH", 2, 22, 8, 0.25f, F_X, 0},      {"PRESSED", 0, 1, 0.5f, 0.02f, F_PCT, 0},
     {"ROUGH", 0, 1, 0.1f, 0.02f, F_PCT, 0},  {"FRY", 0, 1, 0, 0.02f, F_PCT, 0},
     {"GLIDE", 0.005f, 0.6f, 0.06f, 1.08f, F_MS, 1}, {"SPEED", 0.5f, 1.8f, 1, 0.05f, F_X, 0},
-    {"F.FOLDS", 0, 1, 0, 0.02f, F_PCT, 0},   {"BODY", 0, 2, 0, 1, F_BODY, 0},
+    {"F.FOLDS", 0, 1, 0, 0.02f, F_PCT, 0},   {"BODY", 0, 3, 0, 1, F_BODY, 0},   /* (3: BLENDED, from 1.0.0) */
     {"BRIGHT", 0, 1, 0.25f, 0.02f, F_PCT, 0},
     {"FRONT", 0, 1, 0.45f, 0.02f, F_F2, 0},  {"OPEN", 0, 1, 0.35f, 0.02f, F_F1, 0},
-    {"GENDER", 0, 1, 0, 0.05f, F_PCT, 0},    {"AGE", 0, 1, 0, 0.05f, F_PCT, 0},
+    {"GENDER", 0, 1, 0.5f, 0.05f, F_PCT, 0}, {"AGE", 0, 1, 0, 0.05f, F_PCT, 0},   /* (BLENDED's own: half male, half female) */
     /* (the tongue: CHIMERA's neutral the start; the ranges a little past where its English puts it: the body
      * 1.25-3.8 cm front, 5.7-8.5 high, the tip 5.35-6.85 forward, 8.2-10 up) */
     {"FORWARD", 1.0f, 4.2f, 2.9f, 0.05f, F_CM, 0}, {"HEIGHT", 5.3f, 8.8f, 6.85f, 0.05f, F_CM, 0},
@@ -1168,8 +1170,10 @@ static float pad_f2(float front) { return mix_main.b.pad_f2 * PAD_F2_HI * fm_exp
 
 /* the voice presets (this firmware's own: CHIMERA has none) and the vowel snapshots, as the store keeps them */
 #define NSNAP 12
-#define PRESETS_MAGIC 0x43485032u             /* "CHP2" (1.0.0: the body's blend and the tongue's place added; "CHP1"'s
-                                               * presets are carried over, their body as its blend) */
+#define PRESETS_MAGIC 0x43485033u             /* "CHP3" (1.1.0: BLENDED a body of its own, its blend kept beside the body;
+                                               * "CHP2" (1.0.0: the blend and the tongue's place added) and "CHP1" carried
+                                               * over) */
+#define PRESETS_MAGIC2 0x43485032u
 #define PRESETS_MAGIC1 0x43485031u
 #define NK1 23                                /* (CHP1's knobs: up to K_OPEN) */
 typedef struct {
@@ -1230,6 +1234,16 @@ static void presets_load(void)
     n = plat_store_load(OBJ_PRESETS, &presets, sizeof presets);
     if (n == (int)sizeof presets && presets.magic == PRESETS_MAGIC)
         return;
+    if (n == (int)sizeof presets && presets.magic == PRESETS_MAGIC2) {   /* 1.0.0's: the same knobs */
+        presets.magic = PRESETS_MAGIC;
+        for (i = 0; i < NPRESETS; i++) {      /* a blend saved as its nearest body's index beside its gender and age
+                                               * (not that body's own place) is BLENDED now */
+            const int b = (int)(presets.v[i][K_BODY] + 0.5f);
+            if (b >= 0 && b < NBODIES && (presets.v[i][K_GENDER] != (b == 1 ? 1.0f : 0.0f) || presets.v[i][K_AGE] != (b == 2 ? 1.0f : 0.0f)))
+                presets.v[i][K_BODY] = (float)BODY_BLENDED;
+        }
+        return;
+    }
     if (n == (int)(4 + NPRESETS * NK1 * 4 + NSNAP * 4 * 4) && presets.magic == PRESETS_MAGIC1) {   /* 0.2.0-0.9.0's */
         static float old[NPRESETS * NK1 + NSNAP * 4 + 1];
         int k;
@@ -1237,13 +1251,9 @@ static void presets_load(void)
         presets.magic = PRESETS_MAGIC;
         for (i = 0; i < NPRESETS; i++) {
             const float *v = old + 1 + i * NK1;
-            int b;
-            preset_factory(i, presets.v[i]);
+            preset_factory(i, presets.v[i]);  /* (BLENDED's blend from the defaults; its body as it was) */
             for (k = 0; k < NK1; k++)
                 presets.v[i][k] = v[k];
-            b = (int)(v[K_BODY] + 0.5f);
-            presets.v[i][K_GENDER] = b == 1 ? 1.0f : 0.0f;
-            presets.v[i][K_AGE] = b == 2 ? 1.0f : 0.0f;
         }
         for (i = 0; i < NSNAP; i++)
             for (k = 0; k < 4; k++)
@@ -1397,15 +1407,22 @@ static void knob_turn(int id, int32_t e)
     const knob_t *d = &KNOB[id];
     float v = kv[id];
     if (d->fmt == F_BODY) {                   /* ALGORITHM: the body, chosen now, switched when the knob rests */
-        int i = (body_pending >= 0 ? body_pending : body_cur) + (int)e;
+        int i = (body_pending >= 0 ? body_pending : (int)(kv[K_BODY] + 0.5f)) + (int)e;   /* (from the knob: BLENDED's
+                                                                                          * nearest body is not it) */
         if (body_cur == BODY_SEAL) {            /* the Bestiary: its creature */
             creature_pick(e);
             return;
         }
-        i = i < 0 ? 0 : i >= NBODIES ? NBODIES - 1 : i;
+        i = i < 0 ? 0 : i > BODY_BLENDED ? BODY_BLENDED : i;
         body_pending = (int8_t)i;
         body_turned_at = plat_ms();
-        app_say("BODY", body_name(i));
+        if (i == BODY_BLENDED) {
+            char t[24];
+            body_label(kv[K_GENDER], kv[K_AGE], t);
+            app_say("BLENDED", t);
+        } else {
+            app_say("BODY", body_name(i));
+        }
         return;
     }
     v = d->log ? v * fm_exp2f((float)e * fm_log2f(d->step)) : v + (float)e * d->step;
@@ -1442,7 +1459,7 @@ static void knob_text(int id, char *b)
             text_cat(b, d);
         }
         break;
-    case F_BODY: text_cat(b, body_name((int)(v + 0.5f) % NBODIES)); break;
+    case F_BODY: text_cat(b, (int)(v + 0.5f) == BODY_BLENDED ? "BLENDED" : body_name((int)(v + 0.5f) % NBODIES)); break;
     case F_F2: int_text((int32_t)(pad_f2(v) + 0.5f), b); break;
     case F_F1: int_text((int32_t)(pad_f1(v) + 0.5f), b); break;
     }
@@ -1519,18 +1536,25 @@ static void body_label(float g, float a, char *t)
     }
 }
 
+/* the gender and age the body knob gives: a body whole's place, or BLENDED's own */
+static void body_place(int body, float *g, float *a)
+{
+    *g = body == BODY_BLENDED ? fm_clampf(kv[K_GENDER], 0, 1) : body == 1 ? 1.0f : 0.0f;
+    *a = body == BODY_BLENDED ? fm_clampf(kv[K_AGE], 0, 1) : body == 2 ? 1.0f : 0.0f;
+}
+
 static void body_apply(void)
 {
-    const float g = fm_clampf(kv[K_GENDER], 0, 1), a = fm_clampf(kv[K_AGE], 0, 1);
-    float w[3];
-    const int b = body_weights(g, a, w);
+    float g, a, w[3];
+    int b;
+    body_place((int)(kv[K_BODY] + 0.5f), &g, &a);
+    b = body_weights(g, a, w);
     if (b == body_cur && g == body_g && a == body_a)
         return;
     body_cur = (uint8_t)b;
     body_hum = (uint8_t)b;                    /* a human: the nearest body's (the tunes' octave) */
     body_g = g;
     body_a = a;
-    kv[K_BODY] = (float)b;
     body_mix(w, b, &mix_main);
     ch_speech_blend(w, blend_buf, (int)sizeof blend_buf);   /* its tables (a body whole: its own) */
     home_body();
@@ -2185,16 +2209,23 @@ static void ed_input(uint32_t keys, uint32_t btn, uint32_t now)
 static uint8_t blend_pending;                 /* SEL held + PRESET / SELECT turned: the blend switches when they rest */
 static uint32_t blend_turned_at;
 
-static void blend_turn(int id, int32_t e)    /* gender or age, in 5 % steps */
+static void blend_turn(int id, int32_t e)    /* gender or age, in 5 % steps (from a body whole: BLENDED, from its place) */
 {
     char t[24];
-    float v = kv[id] + 0.05f * (float)e;
+    float v;
+    const int body = body_pending >= 0 ? body_pending : (int)(kv[K_BODY] + 0.5f);
+    if (body != BODY_BLENDED) {
+        body_place(body, &kv[K_GENDER], &kv[K_AGE]);
+        kv[K_BODY] = (float)BODY_BLENDED;
+        body_pending = -1;
+    }
+    v = kv[id] + 0.05f * (float)e;
     v = (float)(int32_t)(v * 20.0f + (v >= 0 ? 0.5f : -0.5f)) / 20.0f;
     kv[id] = fm_clampf(v, 0, 1);
     blend_pending = 1;
     blend_turned_at = plat_ms();
     body_label(kv[K_GENDER], kv[K_AGE], t);
-    app_say(id == K_GENDER ? "GENDER" : "AGE", t);
+    app_say(id == K_GENDER ? "GENDER" : "AGE", t);   /* (BLENDED: in the header once it rests) */
 }
 
 static void body_settle(uint32_t now)          /* ALGORITHM at rest: the body switches; a blend likewise */
@@ -2207,9 +2238,7 @@ static void body_settle(uint32_t now)          /* ALGORITHM at rest: the body sw
         ui.redraw = 1;
     }
     if (body_pending >= 0 && now - body_turned_at >= 400u) {
-        kv[K_BODY] = (float)body_pending;
-        kv[K_GENDER] = body_pending == 1 ? 1.0f : 0.0f;   /* (a body whole: CHIMERA's presets' sliders) */
-        kv[K_AGE] = body_pending == 2 ? 1.0f : 0.0f;
+        kv[K_BODY] = (float)body_pending;   /* (BLENDED's gender and age are kept for it) */
         body_pending = -1;
         set_dirty = 1;
         body_apply();
@@ -3488,10 +3517,19 @@ static void draw_home(void)
             text_cat(pn, PRESET_NAME[set.preset]);
             px = 232 - text_w(&FONT_XS, pn);
             cv_text(px, 7, &FONT_XS, pn, V_BLUE_MID);
-            /* the body (ALGORITHM, or its blend), before the preset */
+            /* the body (ALGORITHM), before the preset: BLENDED's shares */
             {
                 char bl[24];
-                body_label(body_g < 0 ? 0 : body_g, body_a < 0 ? 0 : body_a, bl);
+                if ((int)(kv[K_BODY] + 0.5f) == BODY_BLENDED) {   /* (its shares; on a body whole's place, its name) */
+                    float w[3];
+                    const int nb = body_weights(body_g < 0 ? 0 : body_g, body_a < 0 ? 0 : body_a, w);
+                    if (w[nb] > 0.995f)
+                        text_cat((bl[0] = 0, bl), "BLENDED");
+                    else
+                        body_label(body_g < 0 ? 0 : body_g, body_a < 0 ? 0 : body_a, bl);
+                }
+                else
+                    text_cat((bl[0] = 0, bl), body_name(body_cur));
                 cv_text(px - 8 - text_w(&FONT_XS, bl), 7, &FONT_XS, bl, V_BLUE_DIM);
             }
         }
@@ -4263,6 +4301,8 @@ int app_expect(const char *what, int *got)
         *got = set.kb;
     else if (!strcmp(what, "slot"))
         *got = set.slot;
+    else if (!strcmp(what, "bodysel"))       /* the body knob: 0-2 a body whole, 3 BLENDED */
+        *got = (int)(kv[K_BODY] + 0.5f);
     else if (!strcmp(what, "gender"))        /* the blend (x100): its gender, its age; the audio's anatomy's scale (x1000) */
         *got = (int)(kv[K_GENDER] * 100.0f + 0.5f);
     else if (!strcmp(what, "age"))

@@ -1,4 +1,4 @@
-# CHIMERA's three bodies in the simulator (from 0.5.0): ALGORITHM picks male, female or child, switched when the knob
+# CHIMERA's three bodies in the simulator (from 0.5.0): ALGORITHM picks male, female, child or BLENDED (1.0.0's blend), switched when the knob
 # rests; the audio takes the new anatomy at its next block. Each body holds a vowel in VOWEL mode (FX) and sings a
 # word in WORDS, recorded, and must sound (no silence, no overload); the vowel pad's range follows the body.
 #   python base/tools/build.py app --host; app/build/host/chimera_host app/tests/bodies.txt app/build/host
@@ -77,11 +77,19 @@ wavstop
 expect peak_db_min -30
 expect peak_db_max -1
 shot body-child.png
-# no further than CHILD
-spin ALGO 1
+# one further: BLENDED (its own blend: half male, half female until set), and no further
+spin ALGO 2
+said BLENDED
+wait 500
+expect bodysel 3
+expect gender 50
+expect age 0
+expect bodyk 950
+spin ALGO -1
 said CHILD
 wait 500
 expect body 2
+expect bodysel 2
 # PLAY speaks in the child's voice
 wav body-child-speak.wav
 peakreset

@@ -60,15 +60,13 @@ wait 1800
 shot body-child.png
 spin ALGO -2
 wait 600
-# a blend (SEL held + PRESET): half male, half female, the head between
+# BLENDED (SEL held + PRESET): half male, half female, the head between; then MALE again
 press SEL
 spin PRESET 10
 release SEL
 wait 2200
 shot blend.png
-spin ALGO 1
-wait 300
-spin ALGO -1
+spin ALGO -3
 wait 1800
 # TONGUE (ARP): the tongue forward, a key held
 tap ARP

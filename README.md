@@ -56,8 +56,9 @@ speaks and beatboxes, and a seal's, a songbird's, an alligator's and an elephant
   reaching shapes that are not vowels (the tip to the ridge, the back to the palate).
 - **The knobs:** five pages of CHIMERA's own controls on K1-K4 (sing, shape, mouth, source, play), the body
   (male, female, child) on ALGORITHM, eight voice presets on PRESET.
-- **Blended bodies:** SEL held, PRESET turns gender (male to female) and SELECT age (adult to child): CHIMERA's two
-  body sliders, the airway and every sound's calibrated targets blended between its three bodies.
+- **Blended bodies:** ALGORITHM's fourth body, BLENDED; SEL held, PRESET turns its gender (male to female) and
+  SELECT its age (adult to child): CHIMERA's two body sliders, the airway and every sound's calibrated targets blended
+  between its three bodies.
 - **The screen:** CHIMERA's flat view, live: the head moving as it sings, in CHIMERA's colours.
 - **The Studio:** a web page that prepares the words (eight slots) with the CMU Pronouncing Dictionary, lets you try
   them on an emulated FM-1 in the browser, and sends them to yours over USB.
@@ -223,7 +224,7 @@ from gitee, Emscripten, CHIMERA's dictionary at a fixed commit) and deploys it t
 `version` line in `app/fm1.toml`.
 
 The simulator's tests (`app/tests/`): `silence`, `rest`, `words`, `pages`, `screens`, `studio` (the Studio's SysEx),
-`edit` (the word editor), `bodies` (male, female, child), `blend` (the bodies blended: SEL with PRESET and SELECT, a preset's blend),
+`edit` (the word editor), `bodies` (male, female, child), `blend` (BLENDED: SEL with PRESET and SELECT, the blend kept beside the other bodies and in a preset),
 `tongue` (TONGUE: the tongue placed, the tip held, its pages), `expression` (pressure, aftertouch, mod wheel, pitch bend),
 `crack` (no crack where a nasal ends a word),
 `beat` (the beatbox: pads, a beat, step editing, saving), `seal` (the Bestiary's seal: keys, calls, settings),

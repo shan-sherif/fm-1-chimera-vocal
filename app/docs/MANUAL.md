@@ -53,7 +53,7 @@ The FM-1 itself has no mod wheel or pitch bend: these come from the controller. 
 | --- | --- |
 | HOME | WORDS mode, page 1 (SING). |
 | FX | VOWEL mode and back (a quick press). Held with a key 1-12: that vowel snapshot (below). Its light is on in VOWEL mode. |
-| SEL | The next of pages 2-5, when released (in TONGUE mode: TONGUE, SHAPE, MOUTH). Held: PRESET and SELECT blend the body ([below](#blending-the-bodies)). (Until 0.5.0 this was EDIT.) |
+| SEL | The next of pages 2-5, when released (in TONGUE mode: TONGUE, SHAPE, MOUTH). Held: PRESET and SELECT set the BLENDED body's gender and age ([below](#blending-the-bodies)). (Until 0.5.0 this was EDIT.) |
 | ARP | TONGUE mode and back: the tongue placed by hand, the keys playing pitch ([below](#tongue)). Its light is on in TONGUE mode. From 1.0.0. |
 | EDIT | Opens the word editor on the slot being sung: type words on the keys ([below](#typing-words)). (From 0.5.0; before, EDIT stepped the pages.) |
 | PLAY | Speaks the word slot's words (in WORDS mode). Pressing a key while it speaks starts singing instead. |
@@ -88,7 +88,7 @@ and dark, high is forward and edgy. The presets use it as part of their characte
 
 ## Body
 
-**ALGORITHM** chooses the voice's body, on every page but the Bestiary's (there it chooses the creature): **MALE**, **FEMALE** or **CHILD**, CHIMERA's three bodies. The
+**ALGORITHM** chooses the voice's body, on every page but the Bestiary's (there it chooses the creature): **MALE**, **FEMALE** or **CHILD**, CHIMERA's three bodies, or **BLENDED**, your own blend of them ([below](#blending-the-bodies)). The
 body is the whole airway, its size, its throat's length, its tongue and lips, with each body's own calibrated vowels
 and consonants, so a female or child voice is a different instrument, not a pitch shift. The screen names the body as
 you turn, and it changes when the knob rests (the voice switches to the new body's anatomy, with a quick fade). The head on the
@@ -106,20 +106,26 @@ screen is drawn in the body's size, and the header shows the body beside the pre
 
 ### Blending the bodies
 
-From 1.0.0 a body can be anywhere between the three, as CHIMERA's two body sliders make it. **Hold SEL** and turn:
+From 1.0.0 a body can be anywhere between the three, as CHIMERA's two body sliders make it. From 1.1.0 that blend is
+a body of its own: **ALGORITHM** turns through **MALE**, **FEMALE**, **CHILD** and **BLENDED**. **Hold SEL** and turn
+to set BLENDED's blend:
 
 - **PRESET: gender**, from male (0 %) to female (100 %).
 - **SELECT: age**, from adult (0 %) to child (100 %).
 
+Turned while a body whole is chosen, they switch to BLENDED starting from that body's place (from FEMALE: gender
+100 %, age 0 %), so nothing jumps. BLENDED keeps its blend while ALGORITHM picks the others, so it is there again when
+you come back to it; until you set one it is half male, half female.
+
 CHIMERA has one child, not a boy and a girl, so the two make a triangle: the more child, the less gender matters (at
 age 100 % it is the child whatever the gender). The shares are male (100 − age) × (100 − gender), female
-(100 − age) × gender, child age; the screen shows them as you turn ("M 50  F 50") and in the header after, and the voice
+(100 − age) × gender, child age; the screen shows them as you turn, and in the header after ("M 50  F 50"); the voice
 switches when you let go of the knob, as ALGORITHM's does.
 
 The blend is the airway's size, throat, tongue and lips between the bodies', each sound's calibrated targets blended
 the same way (CHIMERA's own blending), the speaking pitch and the vowel pad's range between theirs. SEL released after
-a turn keeps the page; SEL alone still turns it. ALGORITHM still picks a body whole (setting both), and a preset keeps
-its blend. (Presets saved before 1.0.0 keep their body.)
+a turn keeps the page; SEL alone still turns it. A preset keeps its body, BLENDED included, and BLENDED's blend.
+(Presets saved with 1.0.0 that held a blend come back as BLENDED; earlier ones keep their body.)
 
 ![A body half male, half female: M 50 F 50 in the header, the head between the two in size](img/blend.png "SEL held: PRESET to gender 50 %")
 
