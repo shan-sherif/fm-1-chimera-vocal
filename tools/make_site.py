@@ -281,10 +281,21 @@ def add_studio(out, version):
         index.write_text(html, encoding="utf-8")
 
 
+# the emulator's page lives only inside the Studio (its iframe): opened on its own, it goes to the Studio (1.1.1), and
+# search engines leave it out. (The Studio needs emu/: the page, the wasm, the port client, so it stays)
+EMU_ROUTE = """<meta name="robots" content="noindex">
+<script>if (window.self === window.top) location.replace("../studio/");</script>
+"""
+
+
 def theme_emu(path):
     html = path.read_text(encoding="utf-8")
     if "</style>" not in html:
         raise SystemExit(f"{path}: no <style> to theme (fm1-base's emulator page changed?)")
+    if "<head>" not in html:
+        raise SystemExit(f"{path}: no <head> for the route to the Studio (fm1-base's emulator page changed?)")
+    if "location.replace(\"../studio/\")" not in html:
+        html = html.replace("<head>", "<head>\n" + EMU_ROUTE, 1)
     html = html.replace("</style>", EMU_CSS + "</style>", 1)
     if "class=\"credit\"" not in html:   # the credit under its title, as every page
         html = re.sub(r"(<main>)", r"\1\n" + CREDIT.replace("\\", "\\\\"), html, count=1)
