@@ -9,3 +9,6 @@ CHECKLIST.md
 
 # my own release notes
 release-notes/
+
+# macOS Finder metadata, in any folder
+.DS_Store
