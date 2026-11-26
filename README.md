@@ -26,6 +26,8 @@
   (Chrome or Edge); it can put M-VAVE's own firmware back too.
 - **[Manual](https://shan-sherif.github.io/fm-1-chimera-vocal/manual/)**: the keys, buttons, knobs and screens
   ([its source](app/docs/MANUAL.md)).
+- **[FMB-Vocal](https://github.com/shan-sherif/fm-1-fmb-vocal)**: interested in a variation? FMB-Vocal is a separate
+  firmware built from this one, with its own design and features.
 
 ## What this is
 

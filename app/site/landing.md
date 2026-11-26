@@ -43,6 +43,8 @@ same fix as [Felucca's](https://github.com/hugelton/Felucca/commit/f4cbb6a2a0a35
 - The [Manual](manual/) explains the keys, the knobs and the screen.
 - The [Source](https://github.com/shan-sherif/fm-1-chimera-vocal): the voice's port is MIT (CHIMERA's licence), the
   firmware's platform MPL-2.0 (fm1-base's).
+- Interested in a variation? [FMB-Vocal](https://github.com/shan-sherif/fm-1-fmb-vocal) is a separate firmware built
+  from this one, with its own design and features.
 
 These pages count visits with [GoatCounter](https://www.goatcounter.com/): no cookies, no personal data.
 
